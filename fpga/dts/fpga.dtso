@@ -1,0 +1,32 @@
+/dts-v1/;
+/plugin/;
+/ {
+  	fragment@uio {
+		target = <&amba_pl>;
+                __overlay__ {
+
+                        rp_acquire: rp_acquire@50000000 {
+                     		#address-cells = <1>;
+                		#size-cells = <1>;
+                                compatible = "generic-uio";
+                                reg = <0x40000000 0x1000>,<0x19000000 0x80000>;
+                                       reg-names = "regset", "buffer";
+                                interrupt-parent = <&intc>;
+				interrupts = <0 30 1>;
+                        };
+
+                        rp_generate: rp_generate@50100000 {
+                     		#address-cells = <1>;
+                		#size-cells = <1>;
+                                compatible = "generic-uio";
+                                reg = <0x40001000 0x1000>,<0x40002000 0x10000>;
+                                       reg-names = "regset", "waveform";
+                                interrupt-parent = <&intc>;
+				interrupts = <0 31 1>;
+                        };                    
+                };
+
+        };
+};
+
+

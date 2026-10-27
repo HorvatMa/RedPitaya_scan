@@ -1,0 +1,30 @@
+# Vivado: regenerable build outputs (sources, .xpr, .bd, IP .xci/.xcix and fpga/rp_top.bit are kept)
+*.runs/
+*.cache/
+*.gen/
+*.sim/
+*.ip_user_files/
+.Xil/
+vivado*.jou
+vivado*.log
+webtalk*
+
+# C builds
+server/build/
+server2/build/
+
+# Python
+__pycache__/
+*.pyc
+
+# KiCad locks / autosave
+*.lck
+_autosave-*
+fp-info-cache
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# backup of the previous repository (martinhorvat/RedPitaya_SiPM), local only
+/.git-old-RedPitaya_SiPM/

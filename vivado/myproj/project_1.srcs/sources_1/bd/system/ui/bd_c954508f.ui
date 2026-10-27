@@ -1,0 +1,109 @@
+{
+   "ActiveEmotionalView":"Default View",
+   "Default View_ScaleFactor":"1.54244",
+   "Default View_TopLeft":"417,1134",
+   "ExpandedHierarchyInLayout":"",
+   "guistr":"# # String gsaved with Nlview 7.0r6  2020-01-29 bk=1.5227 VDI=41 GEI=36 GUI=JA:10.0 non-TLS
+#  -string -flagsOSRD
+preplace port DDR -pg 1 -lvl 6 -x 2210 -y -60 -defaultsOSRD
+preplace port FIXED_IO -pg 1 -lvl 6 -x 2210 -y 30 -defaultsOSRD
+preplace port adc_clk -pg 1 -lvl 0 -x -180 -y 20 -defaultsOSRD
+preplace port clk_out -pg 1 -lvl 6 -x 2210 -y 60 -defaultsOSRD
+preplace port FCLK_CLK0 -pg 1 -lvl 6 -x 2210 -y 520 -defaultsOSRD
+preplace port FCLK_CLK1 -pg 1 -lvl 6 -x 2210 -y 550 -defaultsOSRD
+preplace port FCLK_CLK2 -pg 1 -lvl 6 -x 2210 -y 580 -defaultsOSRD
+preplace port FCLK_CLK3 -pg 1 -lvl 6 -x 2210 -y 610 -defaultsOSRD
+preplace port FCLK_RESET0_N -pg 1 -lvl 6 -x 2210 -y 350 -defaultsOSRD
+preplace port FCLK_RESET1_N -pg 1 -lvl 6 -x 2210 -y 380 -defaultsOSRD
+preplace port FCLK_RESET2_N -pg 1 -lvl 6 -x 2210 -y 410 -defaultsOSRD
+preplace port FCLK_RESET3_N -pg 1 -lvl 6 -x 2210 -y 440 -defaultsOSRD
+preplace portBus adc_data_ch1 -pg 1 -lvl 0 -x -180 -y 50 -defaultsOSRD
+preplace portBus adc_data_ch2 -pg 1 -lvl 0 -x -180 -y 80 -defaultsOSRD
+preplace portBus dac_dat_a -pg 1 -lvl 6 -x 2210 -y 90 -defaultsOSRD
+preplace portBus dac_dat_b -pg 1 -lvl 6 -x 2210 -y 120 -defaultsOSRD
+preplace portBus led_o -pg 1 -lvl 6 -x 2210 -y 1610 -defaultsOSRD
+preplace portBus rstn_out -pg 1 -lvl 6 -x 2210 -y 220 -defaultsOSRD
+preplace inst axi_interconnect_0 -pg 1 -lvl 3 -x 1130 -y 622 -defaultsOSRD
+preplace inst clk_wiz_0 -pg 1 -lvl 3 -x 1130 -y 1220 -defaultsOSRD
+preplace inst proc_sys_reset -pg 1 -lvl 2 -x 350 -y 370 -defaultsOSRD
+preplace inst processing_system7 -pg 1 -lvl 2 -x 350 -y 930 -defaultsOSRD
+preplace inst xlconcat_0 -pg 1 -lvl 2 -x 350 -y 2170 -defaultsOSRD
+preplace inst xlconcat_1 -pg 1 -lvl 5 -x 2000 -y 1610 -defaultsOSRD
+preplace inst xlconstant -pg 1 -lvl 2 -x 350 -y 230 -defaultsOSRD
+preplace inst xlconstant_0 -pg 1 -lvl 1 -x -80 -y 1660 -defaultsOSRD
+preplace inst xlconstant_1 -pg 1 -lvl 1 -x -80 -y 1920 -defaultsOSRD
+preplace inst generator_test_0 -pg 1 -lvl 5 -x 2000 -y 290 -defaultsOSRD
+preplace inst vector_split_0 -pg 1 -lvl 4 -x 1680 -y 1620 -defaultsOSRD
+preplace inst generate_top_0 -pg 1 -lvl 3 -x 1130 -y 1450 -defaultsOSRD
+preplace inst waveform_top_0 -pg 1 -lvl 3 -x 1130 -y 1750 -defaultsOSRD
+preplace inst acquire_top_0 -pg 1 -lvl 3 -x 1130 -y 400 -defaultsOSRD
+preplace inst integrator_top_0 -pg 1 -lvl 2 -x 350 -y 90 -defaultsOSRD
+preplace inst AXI_HP_top_0 -pg 1 -lvl 3 -x 1130 -y 150 -defaultsOSRD
+preplace inst reg_ctrl_top_0 -pg 1 -lvl 2 -x 350 -y 1700 -defaultsOSRD
+preplace inst input_selector_0 -pg 1 -lvl 2 -x 350 -y 1400 -defaultsOSRD
+preplace netloc ACLK_1 1 1 3 100 582 780 742 1320
+preplace netloc AXI_HP_top_0_intr 1 1 4 70 1150 880 812 1460J 812 1800
+preplace netloc M00_ARESETN_1 1 1 5 60 -50 600 -130 N -130 1840 220 N
+preplace netloc Net1 1 1 1 10 1660n
+preplace netloc acquire_top_0_data_detector 1 2 2 850 -30 1360
+preplace netloc acquire_top_0_data_osc1 1 2 2 880 -20 1330
+preplace netloc acquire_top_0_data_osc2 1 2 2 890 -10 1320
+preplace netloc acquire_top_0_trig 1 1 3 100 -60 800 -60 1350
+preplace netloc adc_clk_1 1 0 3 NJ 20 0 -30 760J
+preplace netloc adc_data_ch1_1 1 0 2 NJ 50 10
+preplace netloc clk_gen_locked 1 1 5 50 -70 790 -70 1420 60 1850 60 N
+preplace netloc clk_wiz_0_locked 1 1 3 70 -110 NJ -110 1400J
+preplace netloc generate_top_0_bram_read_addr_1 1 2 2 890 1620 1320
+preplace netloc generate_top_0_bram_read_addr_2 1 2 2 850 1300 1330
+preplace netloc generate_top_0_dac_val_1 1 2 4 860 0 1410 90 N 90 N
+preplace netloc generate_top_0_dac_val_2 1 1 5 120 1160 890 1140 1430 120 N 120 N
+preplace netloc proc_sys_reset_interconnect_aresetn 1 2 1 750 390n
+preplace netloc reg_ctrl_top_0_cfg_dec 1 2 1 740 440n
+preplace netloc reg_ctrl_top_0_ctrl_reg 1 2 1 730 160n
+preplace netloc reg_ctrl_top_0_decimation_1 1 2 1 820 1440n
+preplace netloc reg_ctrl_top_0_decimation_2 1 2 1 840 1460n
+preplace netloc reg_ctrl_top_0_fifo_min_thresh 1 2 1 700 140n
+preplace netloc reg_ctrl_top_0_set_wfm 1 2 1 580 1780n
+preplace netloc reg_ctrl_top_0_start_acq 1 2 3 770 1600 1460 1520 1790
+preplace netloc reg_ctrl_top_0_start_gen 1 2 3 830 1610 1450 1510 1820
+preplace netloc reg_ctrl_top_0_waveform_len_1 1 2 1 800 1400n
+preplace netloc reg_ctrl_top_0_waveform_len_2 1 2 1 810 1420n
+preplace netloc reg_ctrl_top_0_wfm_addr 1 2 1 670 1770n
+preplace netloc waveform_top_0_bram_dout_1 1 2 2 880 1630 1320J
+preplace netloc waveform_top_0_bram_dout_2 1 2 2 860 1880 1320J
+preplace netloc waveform_top_0_bram_dout_valid 1 2 2 870 1890 1340J
+preplace netloc xlconcat_0_dout 1 1 2 120 710 570J
+preplace netloc xlconcat_1_dout 1 5 1 N 1610
+preplace netloc xlconstant_1_dout 1 1 4 0 1940 N 1940 N 1940 1850
+preplace netloc xlconstant_dout 1 1 2 110 -20 590J
+preplace netloc processing_system7_FCLK_CLK0 1 2 4 660 752 NJ 752 N 752 2120
+preplace netloc processing_system7_FCLK_CLK1 1 2 4 670 762 NJ 762 N 762 2150
+preplace netloc processing_system7_FCLK_CLK2 1 2 4 690 772 NJ 772 N 772 2170
+preplace netloc processing_system7_FCLK_CLK3 1 2 4 720 782 NJ 782 N 782 2180
+preplace netloc processing_system7_FCLK_RESET3_N 1 2 4 780 802 NJ 802 N 802 2160
+preplace netloc processing_system7_FCLK_RESET0_N 1 2 4 620 -140 NJ -140 N -140 2180
+preplace netloc processing_system7_FCLK_RESET1_N 1 2 4 640 -120 NJ -120 N -120 2130
+preplace netloc processing_system7_FCLK_RESET2_N 1 1 5 90 -80 630 -80 NJ -80 N -80 2120
+preplace netloc waveform_top_0_bram_read 1 1 3 120 1930 NJ 1930 1330
+preplace netloc reg_ctrl_top_0_reg_wr_data 1 2 1 630 1810n
+preplace netloc AXI_HP_top_0_transfer_rd_cnt 1 1 3 30 -90 NJ -90 1340
+preplace netloc reg_ctrl_top_0_integrator_dec 1 1 2 120 -10 580
+preplace netloc integrator_top_0_integrated_signal 1 2 1 570 80n
+preplace netloc AXI_HP_top_0_busy 1 3 2 NJ 170 1830
+preplace netloc AXI_HP_top_0_n_intr 1 3 1 1440 190n
+preplace netloc AXI_HP_top_0_buffer_n 1 1 3 20 -100 NJ -100 1370
+preplace netloc reg_ctrl_top_0_req_int 1 2 3 750 1870 NJ 1870 1830J
+preplace netloc AXI_HP_top_0_full 1 3 2 NJ 230 1810
+preplace netloc reg_ctrl_top_0_input_sel 1 1 4 110 1920 630 1900 1430 1720 1840
+preplace netloc adc_data_ch2_1 1 0 2 NJ 80 0
+preplace netloc input_selector_0_output_val 1 2 1 710 420n
+preplace netloc processing_system7_DDR 1 2 4 610 -50 NJ -50 N -50 2110
+preplace netloc AXI_HP_top_0_m_axi 1 1 3 40 -150 NJ -150 1380J
+preplace netloc processing_system7_FIXED_IO 1 2 4 680 792 NJ 792 N 792 2140
+preplace netloc processing_system7_M_AXI_GP0 1 2 1 650 562n
+preplace netloc axi_interconnect_0_M00_AXI 1 1 3 80 -40 NJ -40 1390J
+levelinfo -pg 1 -180 -80 350 1130 1680 2000 2210
+pagesize -pg 1 -db -bbox -sgen -350 -200 2360 2450
+"
+}
+0
