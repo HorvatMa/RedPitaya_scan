@@ -1,9 +1,9 @@
 # RedPitaya_SiPM server2
-#   make          server with the simulated FPGA (build/rpsipm_server_fake), runs on the PC
+#   make          build/rpsipm_server_fake (simulated FPGA, runs anywhere) and
+#                 build/rpsipm_server (real FPGA via UIO; run on the board with the overlay applied)
 #   make test     host-side unit tests (reconstruction core)
 #   make bench    reconstruction throughput benchmark
 #   make clean
-# The board build (hw/hw_uio.c, milestone M1) is not written yet.
 
 CC      ?= gcc
 CFLAGS  ?= -std=gnu11 -O2 -g -Wall -Wextra -Wshadow -Wpointer-arith
@@ -18,10 +18,15 @@ BUILD   := build
 CORE    := src/recon/scan.c src/recon/recon.c
 SERVER  := src/main.c src/app.c src/config.c src/util/ring.c src/net/proto.c src/net/server.c
 FAKE    := src/hw/hw_fake.c src/hw/sim.c
+UIO     := src/hw/hw_uio.c
 HEADERS := $(wildcard src/*.h src/*/*.h)
 
 .PHONY: all test bench clean
-all: $(BUILD)/rpsipm_server_fake
+all: $(BUILD)/rpsipm_server_fake $(BUILD)/rpsipm_server
+
+$(BUILD)/rpsipm_server: $(SERVER) $(CORE) $(UIO) $(HEADERS)
+	@mkdir -p $(BUILD)
+	$(CC) $(CFLAGS) -o $@ $(SERVER) $(CORE) $(UIO) $(LDLIBS)
 
 $(BUILD)/rpsipm_server_fake: $(SERVER) $(CORE) $(FAKE) $(HEADERS)
 	@mkdir -p $(BUILD)

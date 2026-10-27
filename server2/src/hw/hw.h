@@ -21,8 +21,8 @@ typedef struct {
 typedef struct hw hw_t;
 
 /*
- * Backends: hw_fake.c (simulator, runs anywhere) and, on the board, hw_uio.c
- * (not written yet, milestone M1). Exactly one is linked into the server.
+ * Backends: hw_fake.c (simulator, runs anywhere) and hw_uio.c (the real FPGA through UIO,
+ * on the board with the overlay applied). Exactly one is linked into each server binary.
  */
 hw_t       *hw_open(void);
 void        hw_close(hw_t *hw);
