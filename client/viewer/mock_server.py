@@ -15,7 +15,8 @@ import time
 
 import numpy as np
 
-from rpsipm.protocol import (T_CMD, T_REPLY, T_STATUS, pack_frame, pack_msg, recv_msg)
+from rpsipm.protocol import (DTYPE_NAMES, T_CMD, T_REPLY, T_STATUS, pack_frame, pack_msg,
+                             recv_msg)
 
 FPGA_HZ = 125e6
 
@@ -25,13 +26,15 @@ DEFAULTS = {
     "fast.shape": "sine", "fast.freq": "1000", "fast.amp": "2.4", "fast.offset": "0",
     "acq.dec": "50", "acq.int_dec": "1",
     "img.width": "auto", "img.height": "auto", "img.bidir": "sum", "img.roi": "0 1 0.02 0.98",
+    "img.dtype": "float32",
     "cal.delay": "0.5", "cal.fast_gain": "1", "cal.fast_offset": "0",
 }
 CHOICES = {
     "slow.shape": {"sawtooth", "triangle"}, "fast.shape": {"sine", "triangle"},
     "img.bidir": {"sum", "forward", "backward", "both"},
+    "img.dtype": {"float32", "uint16", "uint8"},
 }
-LIVE_KEYS = {"img.roi"}
+LIVE_KEYS = {"img.roi", "img.dtype"}
 
 
 def parse_roi(text):
@@ -169,7 +172,7 @@ class Session:
                              n_records=n_rec, n_discarded=n_rec // 40,
                              slow_freq=float(self.cfg["slow.freq"]),
                              fast_freq=float(self.cfg["fast.freq"]),
-                             roi=(x0, x1, y0, y1))
+                             roi=(x0, x1, y0, y1), dtype=DTYPE_NAMES[self.cfg["img.dtype"]])
             with self.slot_cv:
                 if self.slot is not None:
                     self.frames_dropped += 1      # previous frame never left: link too slow

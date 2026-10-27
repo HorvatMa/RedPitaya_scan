@@ -7,7 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-typedef enum { K_DOUBLE, K_UINT, K_SIZE, K_SLOW_SHAPE, K_FAST_SHAPE, K_BIDIR, K_ROI } kind_t;
+typedef enum { K_DOUBLE, K_UINT, K_SIZE, K_SLOW_SHAPE, K_FAST_SHAPE, K_BIDIR, K_DTYPE, K_ROI } kind_t;
 
 typedef struct {
     const char *key;
@@ -34,6 +34,7 @@ static const keydef_t KEYS[] = {
     { "img.width",       K_SIZE,       F(img_w),           1, 1920, 0 },
     { "img.height",      K_SIZE,       F(img_h),           1, 1080, 0 },
     { "img.bidir",       K_BIDIR,      F(bidir),           0, 0, 0 },
+    { "img.dtype",       K_DTYPE,      F(dtype),           0, 0, 1 },
     { "img.roi",         K_ROI,        F(roi),             0, 1, 1 },
     { "cal.delay",       K_DOUBLE,     F(cal_delay),       -RECON_MAX_DELAY, RECON_MAX_DELAY, 0 },
     { "cal.fast_gain",   K_DOUBLE,     F(cal_fast_gain),   1e-3, 1e3, 0 },
@@ -46,6 +47,7 @@ static const keydef_t KEYS[] = {
 
 static const char *SLOW_SHAPES[] = { [WF_SAWTOOTH] = "sawtooth", [WF_TRIANGLE] = "triangle" };
 static const char *FAST_SHAPES[] = { [WF_SINE] = "sine", [WF_TRIANGLE] = "triangle" };
+static const char *DTYPES[] = { [PIX_FLOAT32] = "float32", [PIX_UINT16] = "uint16", [PIX_UINT8] = "uint8" };
 static const char *BIDIR[] = { [BIDIR_SUM] = "sum", [BIDIR_FORWARD] = "forward",
                                [BIDIR_BACKWARD] = "backward", [BIDIR_BOTH] = "both" };
 
@@ -57,7 +59,7 @@ void config_defaults(config_t *c)
         .slow_amp = 0.1217, .slow_offset = 2.286,
         .fast_shape = WF_SINE, .fast_freq = 1000.0, .fast_amp = 0.12, .fast_offset = -1.02,
         .acq_dec = 50, .int_dec = 1,
-        .img_w = 0, .img_h = 0, .bidir = BIDIR_SUM,
+        .img_w = 0, .img_h = 0, .bidir = BIDIR_SUM, .dtype = PIX_FLOAT32,
         .roi = { 0.0, 1.0, 0.02, 0.98 },
         .cal_delay = 0.5, .cal_fast_gain = 1.0, .cal_fast_offset = 0.0,
         .hw_slow_gain = 10.75, .hw_fast_gain = 10.75, .hw_sensor_gain = 20.0,
@@ -150,9 +152,11 @@ int config_set(config_t *c, const char *key, const char *value, char *err, size_
         return 0;
     case K_SLOW_SHAPE:
     case K_FAST_SHAPE:
-    case K_BIDIR: {
-        const char **names = k->kind == K_SLOW_SHAPE ? SLOW_SHAPES : k->kind == K_FAST_SHAPE ? FAST_SHAPES : BIDIR;
-        int n = k->kind == K_SLOW_SHAPE ? 2 : k->kind == K_FAST_SHAPE ? 3 : 4;
+    case K_BIDIR:
+    case K_DTYPE: {
+        const char **names = k->kind == K_SLOW_SHAPE ? SLOW_SHAPES : k->kind == K_FAST_SHAPE ? FAST_SHAPES
+                           : k->kind == K_BIDIR ? BIDIR : DTYPES;
+        int n = k->kind == K_SLOW_SHAPE ? 2 : k->kind == K_FAST_SHAPE ? 3 : k->kind == K_BIDIR ? 4 : 3;
         int i = parse_enum(value, names, n);
         if (i < 0) {
             names_list(names, n, opts, sizeof(opts));
@@ -277,6 +281,7 @@ void config_format(const config_t *c, const derived_t *d, char *buf, size_t len)
         case K_SLOW_SHAPE: pos = put(buf, len, pos, "%s=%s\n", k->key, SLOW_SHAPES[*(const int *)p]); break;
         case K_FAST_SHAPE: pos = put(buf, len, pos, "%s=%s\n", k->key, FAST_SHAPES[*(const int *)p]); break;
         case K_BIDIR:      pos = put(buf, len, pos, "%s=%s\n", k->key, BIDIR[*(const int *)p]); break;
+        case K_DTYPE:      pos = put(buf, len, pos, "%s=%s\n", k->key, DTYPES[*(const int *)p]); break;
         case K_ROI: {
             const double *r = (const double *)p;
             pos = put(buf, len, pos, "%s=%.6g %.6g %.6g %.6g\n", k->key, r[0], r[1], r[2], r[3]);

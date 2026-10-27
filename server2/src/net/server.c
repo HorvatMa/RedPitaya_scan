@@ -26,6 +26,8 @@
 typedef struct {
     int             fd;
     app_t          *app;
+    uint8_t        *enc;            /* encoded pixels for integer dtypes */
+    size_t          enc_cap;
     pthread_mutex_t send_lock;      /* one message at a time on the socket */
     atomic_int      alive;
 } conn_t;
@@ -74,11 +76,30 @@ static int send_msg(conn_t *c, uint16_t type, const void *payload, size_t len)
 
 static int send_frame(conn_t *c, const app_frame_t *f)
 {
-    size_t  data = (size_t)f->n_images * f->width * f->height * sizeof(float);
+    size_t npix = (size_t)f->n_images * f->width * f->height;
+    size_t psz = proto_pixel_size(f->dtype);
+    float  lo, hi;
+    if (!psz)
+        return -1;
+    proto_minmax(f->data, npix, &lo, &hi);
+
+    void  *payload = f->data;                  /* float32: send the frame buffer directly */
+    size_t data = npix * psz;
+    if (f->dtype != 0) {
+        if (c->enc_cap < data) {
+            uint8_t *p = realloc(c->enc, data);
+            if (!p)
+                return -1;
+            c->enc = p;
+            c->enc_cap = data;
+        }
+        proto_encode(f->data, npix, f->dtype, lo, hi, c->enc);
+        payload = c->enc;
+    }
     uint8_t hdr[PROTO_HDR_SIZE], fhdr[PROTO_FHDR_SIZE];
     proto_pack_hdr(hdr, MSG_FRAME, (uint32_t)(PROTO_FHDR_SIZE + data));
-    proto_pack_frame_hdr(fhdr, f);
-    struct iovec iov[3] = { { hdr, sizeof(hdr) }, { fhdr, sizeof(fhdr) }, { f->data, data } };
+    proto_pack_frame_hdr(fhdr, f, f->dtype, lo, hi);
+    struct iovec iov[3] = { { hdr, sizeof(hdr) }, { fhdr, sizeof(fhdr) }, { payload, data } };
     pthread_mutex_lock(&c->send_lock);
     int rc = send_all(c->fd, iov, 3);
     pthread_mutex_unlock(&c->send_lock);
@@ -177,6 +198,7 @@ static void serve_client(app_t *app, int fd, volatile sig_atomic_t *quit)
     pthread_join(th, NULL);
     app_stop(app);                             /* rule: a disconnect stops the scan */
     close(fd);
+    free(c.enc);
     pthread_mutex_destroy(&c.send_lock);
 }
 

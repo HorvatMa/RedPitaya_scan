@@ -190,6 +190,7 @@ static void on_frame(void *ctx, const frame_t *fr)
     sl->f.height = fr->height;
     sl->f.n_images = fr->n_images;
     sl->f.flags = a->lost_in_frame ? FRAME_FLAG_DATA_LOST : 0;
+    sl->f.dtype = (uint8_t)a->cfg.dtype;          /* live key: read at publication time */
     sl->f.t_start_ns = a->last_frame_ns;
     sl->f.t_end_ns = now;
     sl->f.n_records = (uint32_t)fr->n_records;
@@ -353,7 +354,7 @@ static void set_locked(app_t *a, const char *key, const char *val, char *out, si
         snprintf(out, outlen, "ERR 2 %s", err);
         return;
     }
-    if (a->running) {                             /* live key: validate and hand to recon */
+    if (a->running && strcmp(key, "img.roi") == 0) {   /* live window: validate and hand to recon */
         derived_t *d = malloc(sizeof(*d));
         if (!d) {
             snprintf(out, outlen, "ERR 5 out of memory");

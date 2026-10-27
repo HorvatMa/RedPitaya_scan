@@ -33,6 +33,7 @@ CONFIG_FIELDS = [
     ("img.width", "Width [px]", "size", dict(hi=1920)),
     ("img.height", "Height [px]", "size", dict(hi=1080)),
     ("img.bidir", "Bidirectional", "choice", dict(items=["sum", "forward", "backward", "both"])),
+    ("img.dtype", "Pixel format", "choice", dict(items=["float32", "uint16", "uint8"])),
     ("cal.delay", "Delay [samples]", "float", dict(lo=-60, hi=60, dec=2)),
 ]
 
@@ -119,6 +120,7 @@ class Bridge(QtCore.QObject):
     def reset_stats(self):
         with QtCore.QMutexLocker(self._mutex):
             self.received = 0
+            self.bytes = 0
             self.link_dropped = 0          # missing frame ids
             self.display_skipped = 0
             self.data_lost = 0             # frames flagged DATA_LOST by the server
@@ -135,6 +137,7 @@ class Bridge(QtCore.QObject):
             self.received += 1
             if frame.flags & FLAG_DATA_LOST:
                 self.data_lost += 1
+            self.bytes += frame.nbytes
             pending = self._latest is not None
             if pending:
                 self.display_skipped += 1
@@ -147,7 +150,7 @@ class Bridge(QtCore.QObject):
         with QtCore.QMutexLocker(self._mutex):
             gaps, self.gaps = self.gaps, []
             return dict(link=self.link_dropped, display=self.display_skipped,
-                        data_lost=self.data_lost, received=self.received), gaps
+                        data_lost=self.data_lost, received=self.received, bytes=self.bytes), gaps
 
     def take_frame(self):
         with QtCore.QMutexLocker(self._mutex):
@@ -260,6 +263,7 @@ class Viewer(QtWidgets.QMainWindow):
         self.shown = None          # 2-D array currently displayed
         self.lut = colormap_lut("gray")
         self.reported = {}         # drop counters already written to the log
+        self._rx_last = (time.monotonic(), 0)
         self.server_dropped = None
         self.server_cfg = {}
         self.server_state = "idle"
@@ -673,10 +677,15 @@ class Viewer(QtWidgets.QMainWindow):
                          f"(acquisition data missing inside the frame)")
         if new["display"]:
             self.log_msg(f"{new['display']} frame(s) not displayed (viewer busy; still recorded)")
+        now = time.monotonic()
+        rate = ((st["bytes"] - self._rx_last[1]) / (now - self._rx_last[0]) / 1e6
+                if st["bytes"] >= self._rx_last[1] and now > self._rx_last[0] else 0.0)
+        self._rx_last = (now, st["bytes"])
         self.reported = st
         total = st["received"] + st["link"]
         self.status_drops.setText(
-            f"dropped: link {st['link']}/{total} | display {st['display']} | rec {st['recorder']}"
+            f"rx {rate:.2f} MB/s | dropped: link {st['link']}/{total} | display {st['display']} | "
+            f"rec {st['recorder']}"
             + (f" | data-lost {st['data_lost']}" if st["data_lost"] else ""))
         self.status_drops.setStyleSheet("color: #c00" if st["link"] or st["recorder"] else "")
 
@@ -692,8 +701,10 @@ class Viewer(QtWidgets.QMainWindow):
             if len(self.fps_times) > 1 else 0.0
         npix = f.width * f.height * f.n_images
         lost = " | DATA LOST" if f.flags & FLAG_DATA_LOST else ""
+        fmt = {0: "f32", 1: "u16", 2: "u8"}.get(f.dtype, "?")
         self.status_frame.setText(
-            f"frame {f.frame_id} | {f.width}×{f.height}×{f.n_images} | {fps:.1f} fps | "
+            f"frame {f.frame_id} | {f.width}×{f.height}×{f.n_images} {fmt} "
+            f"{f.nbytes / 1e6:.2f} MB | {fps:.1f} fps | "
             f"empty {100 * f.n_empty / max(npix, 1):.1f} % | records {f.n_records}{lost}")
         self.redraw()
 

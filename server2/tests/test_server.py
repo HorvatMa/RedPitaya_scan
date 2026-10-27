@@ -44,6 +44,7 @@ def test_commands():
     c = Client("127.0.0.1", PORT)
     assert c.command("ping") == "pong"
     cfg = c.get_config()
+    assert cfg["img.dtype"] == "float32"
     for k in ("slow.freq_actual", "fast.freq_actual", "img.width_actual", "img.height_actual", "acq.rate"):
         assert k in cfg, k
     assert float(cfg["fast.freq_actual"]) == 1000.0
@@ -95,6 +96,22 @@ def test_scan():
     assert new[-1].height == int(h * 0.5) or abs(new[-1].height - h * 0.5) <= 1, (new[-1].height, h)
     ids = [fr.frame_id for fr in frames]
     assert ids == list(range(len(ids))), "window change must not break frame numbering"
+
+    # live pixel-format change: same images, fewer bytes
+    for name, code, bpp in (("uint16", 1, 2), ("uint8", 2, 1)):
+        c.set("img.dtype", name)
+        n0 = len(frames)
+        time.sleep(0.6)
+        enc = [fr for fr in frames[n0:] if fr.dtype == code]
+        assert enc, f"no {name} frame"
+        fr = enc[-1]
+        assert fr.nbytes == 72 + fr.width * fr.height * bpp, (name, fr.nbytes)
+        step = (fr.value_hi - fr.value_lo) / ((65535, 255)[code - 1] - 1)
+        ref = frames[n0 - 1].data
+        assert abs(np.nanmean(fr.data) - np.nanmean(ref)) < 0.05 * np.nanmean(ref) + step, name
+        assert np.isnan(fr.data).mean() <= 0.05
+    c.set("img.dtype", "float32")
+    print("live pixel format ok: float32 -> uint16 -> uint8")
 
     c.command("stop")
     time.sleep(0.3)

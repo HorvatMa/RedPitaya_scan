@@ -27,7 +27,16 @@ def test_frame_roundtrip():
     assert (f.frame_id, f.width, f.height, f.n_images, f.flags, f.n_empty) == (42, 4, 3, 2, 1, 1)
     assert f.roi == (0.25, 0.75, 0.0, 0.5)
     assert np.array_equal(np.nan_to_num(f.data, nan=-1), np.nan_to_num(data, nan=-1))
-    print("frame round trip ok")
+    rng = np.random.default_rng(1)
+    img = rng.uniform(3000, 9000, (2, 50, 60)).astype(np.float32)
+    img[0, 3, 4] = np.nan
+    for dtype, step in ((0, 0.0), (1, 6000 / 65534), (2, 6000 / 254)):
+        f = parse_frame(pack_frame(1, img, dtype=dtype)[12:])
+        assert f.dtype == dtype and f.nbytes == FRAME_HDR.size + img.size * (4, 2, 1)[dtype]
+        assert np.isnan(f.data[0, 3, 4]) and np.isfinite(f.data).sum() == img.size - 1
+        err = np.nanmax(np.abs(f.data - img))
+        assert err <= step / 2 + 2e-3, (dtype, err, step)        # + float32 resolution at ~9000
+    print("frame round trip ok (float32/uint16/uint8)")
 
 
 def wait_port(port, timeout=5.0):

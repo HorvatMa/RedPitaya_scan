@@ -9,6 +9,11 @@ CC      ?= gcc
 CFLAGS  ?= -std=gnu11 -O2 -g -Wall -Wextra -Wshadow -Wpointer-arith
 LDLIBS  := -lm -lpthread
 
+# on the Red Pitaya (Zynq-7010, Cortex-A9): ~2x faster reconstruction than plain -O2
+ifeq ($(shell uname -m),armv7l)
+CFLAGS  += -O3 -mcpu=cortex-a9 -mfpu=neon -mfloat-abi=hard
+endif
+
 BUILD   := build
 CORE    := src/recon/scan.c src/recon/recon.c
 SERVER  := src/main.c src/app.c src/config.c src/util/ring.c src/net/proto.c src/net/server.c

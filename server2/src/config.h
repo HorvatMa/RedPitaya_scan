@@ -7,6 +7,9 @@
 #include "recon/recon.h"
 #include "recon/scan.h"
 
+/* Pixel formats on the wire (frame header dtype). Integer formats are scaled per frame. */
+typedef enum { PIX_FLOAT32 = 0, PIX_UINT16 = 1, PIX_UINT8 = 2 } pixel_t;
+
 #define COUNTS_PER_VOLT 32767.0   /* RP connector: +-1 V <-> +-32767 (to be verified on hardware) */
 
 /* User-facing settings (protocol keys). Voltages are at the galvo/driver side. */
@@ -16,6 +19,7 @@ typedef struct {
     unsigned   acq_dec, int_dec;
     unsigned   img_w, img_h;             /* 0 = auto */
     bidir_t    bidir;
+    pixel_t    dtype;                    /* wire format of the pixels */
     double     roi[4];                   /* x0 x1 y0 y1, fractions of the full range */
     double     cal_delay, cal_fast_gain, cal_fast_offset;
     double     hw_slow_gain, hw_fast_gain, hw_sensor_gain;   /* galvo V per RP V */

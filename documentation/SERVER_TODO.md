@@ -37,6 +37,16 @@ Legend: **(M)** = needs Martin / hardware, otherwise Claude. Ask before modifyin
   - the viewer works against the real C server;
   - finding: the fast-sensor ADC limits the fast resolution to ~94 px at the default scan
     (SERVER_DESIGN §13).
+- 2026-10-27: Benchmarks on the board (`make bench`, gcc 9.4):
+  - first version: 1.3 Mrec/s (-O2) / 1.7 Mrec/s (-O3 NEON) at 1080p, too slow for `acq.dec = 50`
+    (2.5 Mrec/s);
+  - after the inner-loop optimisation (float history, precomputed constant delay interpolation), with
+    identical test results: **4.3 Mrec/s at 94×324, 4.1 at 381×324, 3.2 at 1920×1080**, on one core;
+  - the Makefile adds the Cortex-A9 flags automatically on the board. Unit tests pass on the board.
+- 2026-10-27: **The board's Ethernet links at 100 Mbit/s** (`link up (100/Full)`); measured TCP
+  board → PC is 94 Mbit/s = 11.8 MB/s. The Zynq GEM supports 1 Gbit, so check the cable (Cat5e/6),
+  switch port or wall outlet **(M)**. Added `img.dtype` = float32|uint16|uint8 (live) with per-frame
+  scaling, so 1080p fits about 5.7 fps in uint8 at 100 Mbit.
 - 2026-10-27: Boot-DT reservation attempt (no-map, 512 KiB at `0x1900_0000`) → the kernel didn't boot.
   Martin restored `devicetree.dtb.orig`. Suspected cause: no-map on a non-1/2 MiB-aligned region.
   Retry without no-map, using the serial console.

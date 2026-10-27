@@ -49,12 +49,13 @@ Keys (volts are at the galvo/driver side):
 | `acq.int_dec` | int ≥ 1 | 1 |
 | `img.width`, `img.height` | int or `auto` | auto |
 | `img.bidir` | `sum` \| `forward` \| `backward` \| `both` | sum |
+| `img.dtype` | `float32` \| `uint16` \| `uint8`: pixel format on the wire. *live*: applied to the next frame sent. | float32 |
 | `img.roi` | `x0 x1 y0 y1`: image window as fractions (0..1) of the full commanded range, slow (x, rows) then fast (y, columns); `x0 < x1`, `y0 < y1`. *live*: applied from the next frame. Auto width/height scale with the window. | `0 1 0.02 0.98` |
 | `cal.delay` | samples | 0.5 |
 | `cal.fast_gain`, `cal.fast_offset` | sensor → command calibration | — |
 
 ## FRAME (RP → PC)
-Payload = 64-byte frame header followed by `n_images × height × width` float32, row-major. Image 0 is
+Payload = 72-byte frame header followed by `n_images × height × width` pixels in the format `dtype`, row-major. Image 0 is
 the sum or forward image; image 1 is the backward image (only with `img.bidir both`). NaN = pixel without
 samples.
 
@@ -73,7 +74,7 @@ samples.
 | 0 | u32 | frame_id |
 | 4 | u16 | width |
 | 6 | u16 | height |
-| 8 | u8 | dtype (0 = float32) |
+| 8 | u8 | dtype: 0 = float32, 1 = uint16, 2 = uint8 |
 | 9 | u8 | n_images |
 | 10 | u16 | flags (bit0 DATA_LOST, bit1 PARTIAL) |
 | 12 | u64 | t_start_ns (CLOCK_MONOTONIC on the RP) |
@@ -84,6 +85,17 @@ samples.
 | 40 | f32 | slow_freq_actual (Hz) |
 | 44 | f32 | fast_freq_actual (Hz) |
 | 48 | 4 × f32 | roi `x0 x1 y0 y1` this frame was binned with (see `img.roi`) |
+| 64 | f32 | value_lo: smallest finite pixel value of the frame (NaN if none) |
+| 68 | f32 | value_hi: largest finite pixel value |
+
+**Integer pixel formats** (uint16, uint8; max = 65535 or 255):
+- code 0 = empty pixel (NaN);
+- a finite value v becomes `1 + round((v − lo) / (hi − lo) · (max − 1))`;
+- decode with `v = lo + (code − 1) · (hi − lo) / (max − 1)`;
+- `lo`/`hi` are per frame, so values stay quantitative within one step of `(hi − lo)/(max − 1)`.
+
+Bytes per frame = 72 + n_images·W·H·(4|2|1). For orientation, on the measured board link (100 Mbit/s, about
+11.8 MB/s): 1920×1080 runs at about 1.4 fps in float32, 2.8 in uint16 and 5.7 in uint8.
 
 ## STATUS (RP → PC)
 Sent about once per second, unsolicited. ASCII `key=value` lines. Keys include `state`

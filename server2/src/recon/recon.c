@@ -16,22 +16,29 @@ struct recon {
     frame_cb_t  cb;
     void       *ctx;
 
-    /* history of positions (y already calibrated) and detector values */
-    double      hx[HIST], hy[HIST], hv[HIST];
+    /* history of positions (y already calibrated) and detector values; float is plenty
+       for 16-bit data and much faster than double on the Cortex-A9 */
+    float       hx[HIST], hy[HIST], hv[HIST];
     uint64_t    n_in;              /* records received so far */
+
+    /* constant fractional delay: position(j - delay) = h[j+dk]*wa + h[j+dk+1]*wb */
+    int64_t      dk;
+    float        wa, wb;
 
     /* slow-axis turn detection */
     slow_state_t slow;
-    double       slow_ext;         /* running max (rising) or min (falling) */
-    double       slow_hyst;
+    float        slow_ext;         /* running max (rising) or min (falling) */
+    float        slow_hyst;
     int          synced;           /* seen at least one turn: frames are complete */
 
     int          fast_dir;         /* +1 / -1 */
 
-    double       sx, sy;           /* rows per count, columns per count */
+    float        x_lo, y_lo;
+    float        sx, sy;           /* rows per count, columns per count */
+    float        fgain, foff, vscale;
     int          n_img;
     size_t       npix;             /* width * height */
-    double      *sum;
+    float       *sum;
     uint32_t    *cnt;
     float       *out;
 
@@ -55,10 +62,19 @@ recon_t *recon_create(const recon_cfg_t *cfg, frame_cb_t cb, void *ctx)
     r->ctx = ctx;
     r->n_img = cfg->bidir == BIDIR_BOTH ? 2 : 1;
     r->npix = (size_t)cfg->width * cfg->height;
-    r->sx = cfg->height / (cfg->x_hi - cfg->x_lo);
-    r->sy = cfg->width / (cfg->y_hi - cfg->y_lo);
-    r->slow_hyst = fmax(0.5, 0.001 * (cfg->x_hi - cfg->x_lo));   /* slow command is exact (integer counts) */
+    r->x_lo = (float)cfg->x_lo;
+    r->y_lo = (float)cfg->y_lo;
+    r->sx = (float)(cfg->height / (cfg->x_hi - cfg->x_lo));
+    r->sy = (float)(cfg->width / (cfg->y_hi - cfg->y_lo));
+    r->fgain = (float)cfg->fast_gain;
+    r->foff = (float)cfg->fast_offset;
+    r->vscale = (float)cfg->v_scale;
+    r->slow_hyst = (float)fmax(0.5, 0.001 * (cfg->x_hi - cfg->x_lo));   /* slow command is exact */
     r->fast_dir = 1;
+    double fl = floor(-cfg->delay);
+    r->dk = (int64_t)fl;
+    r->wb = (float)(-cfg->delay - fl);
+    r->wa = 1.0f - r->wb;
 
     size_t n = r->npix * r->n_img;
     r->sum = calloc(n, sizeof(*r->sum));
@@ -104,7 +120,7 @@ static void finish_frame(recon_t *r, int slow_dir)
 
     for (size_t i = 0; i < n; i++) {
         if (r->cnt[i]) {
-            r->out[i] = (float)(r->sum[i] / r->cnt[i]);
+            r->out[i] = r->sum[i] / r->cnt[i];
         } else {
             r->out[i] = NAN;
             empty++;
@@ -126,26 +142,16 @@ static void finish_frame(recon_t *r, int slow_dir)
     clear_accum(r);
 }
 
-/* Linear interpolation in the history ring at fractional index t (absolute record index). */
-static double hist_at(const double *h, double t)
-{
-    double   fl = floor(t);
-    double   fr = t - fl;
-    uint64_t i = (uint64_t)fl;
-    return h[i & HIST_MASK] * (1.0 - fr) + h[(i + 1) & HIST_MASK] * fr;
-}
-
 /* Process the record at absolute index j (at least LAG records behind the newest). */
 static void process(recon_t *r, uint64_t j)
 {
     const recon_cfg_t *c = &r->cfg;
-    double t = (double)j - c->delay;
-    double x = hist_at(r->hx, t);
-    double y = hist_at(r->hy, t);
-    double v = r->hv[j & HIST_MASK];
+    uint64_t i0 = j + (uint64_t)r->dk;               /* wraps correctly for negative dk */
+    float x = r->hx[i0 & HIST_MASK] * r->wa + r->hx[(i0 + 1) & HIST_MASK] * r->wb;
+    float y = r->hy[i0 & HIST_MASK] * r->wa + r->hy[(i0 + 1) & HIST_MASK] * r->wb;
+    float v = r->hv[j & HIST_MASK];
 
     /* slow-axis turn detection with hysteresis on the running extreme */
-    int accumulate;
     if (r->slow == SLOW_RISING) {
         if (x > r->slow_ext) {
             r->slow_ext = x;
@@ -171,16 +177,15 @@ static void process(recon_t *r, uint64_t j)
             r->slow_ext = x;
         }
     }
-    accumulate = r->synced && (r->slow == SLOW_RISING || c->slow_bidir);
     r->f_records++;
-    if (!accumulate)
+    if (!r->synced || !(r->slow == SLOW_RISING || c->slow_bidir))
         return;
 
     /* fast-axis direction from the (delayed) calibrated sensor signal */
-    double dy = y - hist_at(r->hy, t - c->dir_window);
-    if (dy > 0.0)
+    float dy = y - r->hy[(i0 - c->dir_window) & HIST_MASK];
+    if (dy > 0.0f)
         r->fast_dir = 1;
-    else if (dy < 0.0)
+    else if (dy < 0.0f)
         r->fast_dir = -1;
 
     int img = 0;
@@ -191,9 +196,9 @@ static void process(recon_t *r, uint64_t j)
     case BIDIR_SUM:      break;
     }
 
-    double fr = (x - c->x_lo) * r->sx;
-    double fc = (y - c->y_lo) * r->sy;
-    if (fr < 0.0 || fc < 0.0 || fr >= c->height || fc >= c->width)
+    float fr = (x - r->x_lo) * r->sx;
+    float fc = (y - r->y_lo) * r->sy;
+    if (!(fr >= 0.0f && fc >= 0.0f && fr < c->height && fc < c->width))
         return;
 
     size_t idx = (size_t)img * r->npix + (size_t)fr * c->width + (size_t)fc;
@@ -204,13 +209,11 @@ static void process(recon_t *r, uint64_t j)
 
 void recon_push(recon_t *r, const record_t *rec, size_t n)
 {
-    const recon_cfg_t *c = &r->cfg;
-
     for (size_t k = 0; k < n; k++) {
         uint64_t i = r->n_in++;
         r->hx[i & HIST_MASK] = rec[k].x;
-        r->hy[i & HIST_MASK] = c->fast_gain * rec[k].y + c->fast_offset;
-        r->hv[i & HIST_MASK] = rec[k].v * c->v_scale;
+        r->hy[i & HIST_MASK] = r->fgain * rec[k].y + r->foff;
+        r->hv[i & HIST_MASK] = (float)rec[k].v * r->vscale;
 
         /* wait for a full history ring so every interpolation index is valid */
         if (i == HIST) {

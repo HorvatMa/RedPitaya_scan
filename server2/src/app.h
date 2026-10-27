@@ -13,6 +13,7 @@ typedef struct {
     uint32_t frame_id;          /* assigned at reconstruction, restarts at 0 every run */
     uint16_t width, height;
     uint8_t  n_images;
+    uint8_t  dtype;             /* requested wire format (pixel_t); data is always float */
     uint16_t flags;
     uint64_t t_start_ns, t_end_ns;
     uint32_t n_records, n_discarded, n_empty;

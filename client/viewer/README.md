@@ -15,6 +15,9 @@ cd client/viewer
 - **Scan panel:** edit the values, then **Apply** to send only the changed keys. The server's actual
   values (exact frequencies, image size) appear below the panel. Changes are accepted only while
   stopped.
+- **Pixel format** (`img.dtype`): float32, uint16 or uint8 on the wire. It can be changed while
+  running. Integer frames are decoded back to real values (precision: one step of the frame's
+  value range). The status bar shows the format, the bytes per frame and the received MB/s.
 - **Start / Stop** control the scan. Disconnecting also stops it (server rule).
 - **Display:** colormap, auto (0.5–99.5 % percentile) or manual levels. With `Bidirectional = both`
   you can view forward, backward, side by side, or their difference (useful for tuning

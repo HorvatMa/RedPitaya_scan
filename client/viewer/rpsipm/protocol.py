@@ -13,8 +13,12 @@ VERSION = 1
 T_CMD, T_REPLY, T_FRAME, T_STATUS = 1, 2, 3, 4
 
 HDR = struct.Struct("<IHHI")
-FRAME_HDR = struct.Struct("<IHHBBHQQIIIff4f")
-assert HDR.size == 12 and FRAME_HDR.size == 64
+FRAME_HDR = struct.Struct("<IHHBBHQQIIIff4f2f")
+assert HDR.size == 12 and FRAME_HDR.size == 72
+
+# pixel formats: dtype -> (numpy type, max code); integer codes: 0 = empty, 1..max linear in [lo, hi]
+DTYPES = {0: ("<f4", None), 1: ("<u2", 65535), 2: ("u1", 255)}
+DTYPE_NAMES = {"float32": 0, "uint16": 1, "uint8": 2}
 
 FLAG_DATA_LOST = 1 << 0
 FLAG_PARTIAL = 1 << 1
@@ -46,6 +50,10 @@ class Frame:
     slow_freq: float
     fast_freq: float
     roi: tuple                  # (x0, x1, y0, y1) window of this frame
+    dtype: int                  # wire format: 0 float32, 1 uint16, 2 uint8
+    value_lo: float             # finite value range of the frame (integer scaling)
+    value_hi: float
+    nbytes: int                 # payload bytes on the wire
     data: np.ndarray            # shape (n_images, height, width), float32
 
     def header_dict(self):
@@ -56,31 +64,55 @@ def pack_msg(mtype, payload):
     return HDR.pack(MAGIC, VERSION, mtype, len(payload)) + payload
 
 
+def encode_pixels(data, dtype):
+    """float array -> (bytes, lo, hi) in the wire format (same rule as server2 proto_encode)."""
+    finite = data[np.isfinite(data)]
+    lo, hi = (float(finite.min()), float(finite.max())) if finite.size else (float("nan"),) * 2
+    np_t, maxc = DTYPES[dtype]
+    if maxc is None:
+        return np.ascontiguousarray(data, np_t).tobytes(), lo, hi
+    k = (maxc - 1) / (hi - lo) if hi > lo else 0.0
+    code = np.where(np.isfinite(data), 1 + np.floor((np.nan_to_num(data, nan=lo) - lo) * k + 0.5), 0)
+    return code.astype(np_t).tobytes(), lo, hi
+
+
+def decode_pixels(raw, dtype, lo, hi, shape):
+    np_t, maxc = DTYPES[dtype]
+    a = np.frombuffer(raw, np_t).reshape(shape)
+    if maxc is None:
+        return a
+    k = (hi - lo) / (maxc - 1) if hi > lo else 0.0
+    out = (lo + (a.astype(np.float32) - 1) * k).astype(np.float32)
+    out[a == 0] = np.nan
+    return out
+
+
 def pack_frame(frame_id, data, flags=0, t_start_ns=0, t_end_ns=0, n_records=0,
-               n_discarded=0, slow_freq=0.0, fast_freq=0.0, roi=(0.0, 1.0, 0.0, 1.0)):
-    data = np.ascontiguousarray(data, dtype="<f4")
+               n_discarded=0, slow_freq=0.0, fast_freq=0.0, roi=(0.0, 1.0, 0.0, 1.0), dtype=0):
+    data = np.asarray(data, dtype=np.float32)
     if data.ndim == 2:
         data = data[None]
     n_img, h, w = data.shape
     n_empty = int(np.isnan(data).sum())
-    hdr = FRAME_HDR.pack(frame_id, w, h, 0, n_img, flags, t_start_ns, t_end_ns,
-                         n_records, n_discarded, n_empty, slow_freq, fast_freq, *roi)
-    return pack_msg(T_FRAME, hdr + data.tobytes())
+    raw, lo, hi = encode_pixels(data, dtype)
+    hdr = FRAME_HDR.pack(frame_id, w, h, dtype, n_img, flags, t_start_ns, t_end_ns,
+                         n_records, n_discarded, n_empty, slow_freq, fast_freq, *roi, lo, hi)
+    return pack_msg(T_FRAME, hdr + raw)
 
 
 def parse_frame(payload):
     if len(payload) < FRAME_HDR.size:
         raise ProtocolError("short frame")
     (fid, w, h, dtype, n_img, flags, t0, t1, n_rec, n_disc, n_empty,
-     f_slow, f_fast, *roi) = FRAME_HDR.unpack_from(payload)
-    if dtype != 0:
+     f_slow, f_fast, x0, x1, y0, y1, lo, hi) = FRAME_HDR.unpack_from(payload)
+    if dtype not in DTYPES:
         raise ProtocolError(f"unsupported dtype {dtype}")
-    expected = FRAME_HDR.size + 4 * n_img * h * w
-    if len(payload) != expected:
-        raise ProtocolError(f"frame size {len(payload)} != {expected}")
-    data = np.frombuffer(payload, "<f4", offset=FRAME_HDR.size).reshape(n_img, h, w)
+    nbytes = np.dtype(DTYPES[dtype][0]).itemsize * n_img * h * w
+    if len(payload) != FRAME_HDR.size + nbytes:
+        raise ProtocolError(f"frame size {len(payload)} != {FRAME_HDR.size + nbytes}")
+    data = decode_pixels(payload[FRAME_HDR.size:], dtype, lo, hi, (n_img, h, w))
     return Frame(fid, w, h, n_img, flags, t0, t1, n_rec, n_disc, n_empty, f_slow, f_fast,
-                 tuple(roi), data)
+                 (x0, x1, y0, y1), dtype, lo, hi, len(payload), data)
 
 
 def parse_kv(text):
