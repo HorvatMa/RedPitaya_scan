@@ -47,6 +47,11 @@
 
 #define BUFFER_RECORDS_MAX 32768u        /* largest chunk the FPGA produces (256 KiB) */
 
+/* The FPGA sizes the next chunk to the FIFO backlog at clear time, so clearing at once settles at
+   ~50-record chunks and ~40k interrupts/s. Holding the clear until this many records have queued
+   since the interrupt gives chunks of about this size (1/4 of the 16384-sample FIFO). */
+#define CHUNK_TARGET_RECORDS 4096u
+
 typedef struct {
     int      fd;
     volatile uint32_t *map[2];
@@ -56,6 +61,7 @@ typedef struct {
 struct hw {
     uio_dev_t acq, gen;
     int       running;
+    uint32_t  acq_dec;
     unsigned  idle_polls;
     unsigned long irq_recovered;
 };
@@ -219,6 +225,7 @@ int hw_configure(hw_t *hw, const hw_setup_t *s)
 
     wr(a, R_START_ACQ, 0);
     wr(a, R_DEC_FACTOR, s->acq_dec);
+    hw->acq_dec = s->acq_dec;
     wr(a, R_INTEGRATOR_DEC, s->int_dec);
     wr(a, R_INPUT_SEL, 1);                     /* y slot = IN2 (fast position sensor) */
     return 0;
@@ -246,8 +253,8 @@ void hw_stop(hw_t *hw)
     hw->running = 0;
 }
 
-/* copy the chunk the FPGA announced, then release the buffer */
-static long take_chunk(hw_t *hw, record_t *dst, size_t max)
+/* copy the chunk the FPGA announced, then release the buffer (not before *release_at, if given) */
+static long take_chunk(hw_t *hw, record_t *dst, size_t max, const struct timespec *release_at)
 {
     volatile uint32_t *a = hw->acq.map[0];
     uint32_t n = rd(a, R_BUFFER_N);
@@ -259,6 +266,9 @@ static long take_chunk(hw_t *hw, record_t *dst, size_t max)
         uint64_t w = buf[i];
         memcpy(&dst[i], &w, sizeof(w));
     }
+    if (release_at)
+        while (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, release_at, NULL) == EINTR)
+            ;
     wr(a, R_CTRL, CTRL_CLEAR_AND_REQUEST);
     return (long)copy;
 }
@@ -269,6 +279,8 @@ long hw_read(hw_t *hw, record_t *dst, size_t max, int timeout_ms)
         return -1;
     struct pollfd p = { .fd = hw->acq.fd, .events = POLLIN };
     int r = poll(&p, 1, timeout_ms);
+    struct timespec release_at;
+    clock_gettime(CLOCK_MONOTONIC, &release_at);
     if (r < 0)
         return errno == EINTR ? 0 : -1;
     uint32_t one = 1;
@@ -278,10 +290,9 @@ long hw_read(hw_t *hw, record_t *dst, size_t max, int timeout_ms)
         if (++hw->idle_polls * (unsigned)timeout_ms >= 1000 && rd(hw->acq.map[0], R_BUFFER_N) > 0) {
             hw->idle_polls = 0;
             hw->irq_recovered++;
-            long n = take_chunk(hw, dst, max);
             if (write(hw->acq.fd, &one, sizeof(one)) != sizeof(one))
                 return -1;
-            return n;
+            return take_chunk(hw, dst, max, NULL);
         }
         return 0;
     }
@@ -289,8 +300,12 @@ long hw_read(hw_t *hw, record_t *dst, size_t max, int timeout_ms)
     if (read(hw->acq.fd, &count, sizeof(count)) != sizeof(count))
         return -1;
     hw->idle_polls = 0;
-    long n = take_chunk(hw, dst, max);
-    if (write(hw->acq.fd, &one, sizeof(one)) != sizeof(one))    /* re-enable for the next one */
+    /* re-enable before the clear: the line is still high, so the next rising edge cannot be missed */
+    if (write(hw->acq.fd, &one, sizeof(one)) != sizeof(one))
         return -1;
-    return n;
+    uint64_t hold_ns = (uint64_t)CHUNK_TARGET_RECORDS * hw->acq_dec * 8;   /* 125 MHz = 8 ns */
+    release_at.tv_nsec += (long)(hold_ns % 1000000000u);
+    release_at.tv_sec += (time_t)(hold_ns / 1000000000u) + release_at.tv_nsec / 1000000000L;
+    release_at.tv_nsec %= 1000000000L;
+    return take_chunk(hw, dst, max, &release_at);
 }
