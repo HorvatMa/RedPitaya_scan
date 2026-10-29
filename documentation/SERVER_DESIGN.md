@@ -226,24 +226,88 @@ the values actually used, including the quantised frequencies.
     counts once at `start`, and the result is reported back in `get config`.
 
 ## 12. Resolution vs. samples
-The number of samples per frame limits what one frame can contain, more than the network does:
+The number of samples per frame limits what one frame can contain. The auto size is computed by
+`recon_auto_size()` (`recon/recon.c`) and `config_derive()` (`config.c`). Updated 2026-10-29; the earlier
+version of this section counted one row per half-sweep, which the code no longer does.
 
-| Quantity | Formula | Example (`acq.dec = 50`, slow 3 Hz, fast 1 kHz, bidirectional) |
+### 12.1 Quantities
+| Symbol | Meaning | Default |
 |---|---|---|
-| sample rate | 125 MHz / `acq.dec` | 2.5 MS/s |
-| samples per frame | rate / f_slow | 833 k |
-| lines per frame | 2·f_fast / f_slow (bidir) | 667 |
-| samples per line | rate / (2·f_fast) | 1250 (bunched at the turn-around points, because the fast axis is a sine) |
+| R | sample rate = 125 MHz / `acq.dec` | 2.5 MS/s |
+| f_f | fast-axis frequency (sine; position measured on IN2) | 1 kHz |
+| f_s | slow-axis frequency (sawtooth; commanded position) | 3 Hz |
+| ρ | rising fraction of the slow period (`slow.rise`; 0.5 for a triangle) | 0.975 |
 
-- So a 1920×1080 image (2.07 Mpx) would be mostly empty at these settings. The vertical resolution can't
-  exceed the number of lines per frame.
-- Network: 1920×1080×4 B = 8.3 MB/frame. At 3 fps that is 25 MB/s ≈ 200 Mbit/s, fine for 1 Gbit/s. The
-  network is not the bottleneck.
-- Plan:
-  - `img.width`/`img.height` default to `auto`: height = lines per frame (one slow-axis sweep), width ≈
-    samples per line × a usable fraction, capped at 1920×1080;
-  - the user can override with fixed values (empty pixels = NaN, optional fill/interpolation later);
-  - more pixels need a lower `acq.dec` (more samples; limited by CPU, see §5.4) or a slower slow axis.
+`scan_quantise()` first rounds f_f and f_s to frequencies the FPGA can generate,
+125 MHz / (len·dec) with an even table length. All formulas use the resulting `freq_actual`.
+
+### 12.2 Width: two samples per column at the sweep centre
+The fast position is x(t) = A·sin(2π f_f t). It moves fastest at the centre, v_max = 2π f_f A, so two
+consecutive samples there are 2π f_f A / R apart. The image spans 2A in W columns. The rule is
+**at least 2 samples per column at the centre**, where coverage is worst:
+
+    2A / W ≥ 2 · 2π f_f A / R    →    W = R / (2π f_f)
+
+The amplitude cancels, so W doesn't depend on the scan width. Default: W ≈ 397, and × 0.96 (fast ROI) = 381.
+
+How the samples spread over a sweep:
+- a sine spends more time near its ends: the fraction of time spent near x is p(x) = 1 / (π √(A² − x²));
+- one half-sweep has R / (2 f_f) samples, which is π samples per column on average;
+- at the centre it is 2 (by construction), and the edge columns are oversampled.
+
+### 12.3 Height: one row per full fast period
+The fast axis completes f_f ρ / f_s periods during the slow rise:
+
+    H = f_f ρ / f_s        (default 1000 · 0.975 / 3 ≈ 325)
+
+Why not one row per half-sweep:
+- the slow axis moves continuously, so the beam path is a zigzag; each half-sweep is tilted and climbs
+  δ/2, where δ is the slow advance per fast period;
+- if a row is only δ/2 tall and its boundaries don't line up with the turn-arounds, the forward and back
+  sweeps both cross the row on the same side, and the other half of the row stays empty;
+- the delay, the sensor phase and the ROI shift those boundaries, so they generally don't line up;
+- a row of height δ always holds a full zigzag, with both directions edge to edge, which bidirectional
+  `sum` also needs.
+
+### 12.4 The pixel budget is fixed; f_f only sets the aspect ratio
+
+    W · H = (R / f_s) · ρ / (2π)        (samples per frame × ρ / 2π)
+
+- f_f cancels: the total number of pixels depends only on the samples per frame. Default: 833 k samples →
+  ~129 k pixels, about 6.5 samples per pixel.
+- f_f trades width against height:
+
+      W / H = R f_s / (2π ρ f_f²)    →    f_f,opt = √(R f_s / (2π ρ · aspect))
+
+  For a square image at the defaults, f_f ≈ 1.1 kHz gives ≈ 360 × 360.
+- More pixels need a lower `acq.dec` (higher R) or a slower slow axis:
+  - lower `acq.dec` is limited by the board CPU (~4.2 Mrec/s, see §5.4 and the bench in SERVER_TODO);
+  - halving f_s doubles the pixels.
+- The fast galvo's mechanical bandwidth also limits f_f.
+
+### 12.5 Caps and overrides
+- The auto size is capped at 1920 × 1080, then multiplied by the ROI fractions.
+- **Sensor cap (§13):** the auto width is also capped at `fast.sensor_levels`, the number of distinct IN2
+  values across the ROI. With the unconfirmed gains this is ~94 at the default scan, so the sensor, not
+  R, limits the fast axis today.
+  - With `cal.fast_auto = 1` the sensor scale is only known after the start-up fit. The reconstruction
+    applies the cap then, so `img.width_actual` at `start` is an upper bound.
+- `img.width` / `img.height` can be set to fixed values:
+  - larger than the auto size → empty pixels (NaN);
+  - smaller → more samples per pixel, less noise.
+
+| Step | Formula | Default |
+|---|---|---|
+| samples per frame | R / f_s | 833 k |
+| pixel budget | (R / f_s) · ρ / (2π) | ~129 k |
+| width | min(R / (2π f_f) × ROI, sensor levels, 1920) | ~94 (381 without the sensor cap) |
+| height | min(f_f ρ / f_s × ROI, 1080) | 325 |
+
+### 12.6 Network
+1920 × 1080 × 4 B = 8.3 MB per frame, so 3 fps is 25 MB/s ≈ 200 Mbit/s. That would need a 1 Gbit/s link;
+the board currently links at 100 Mbit/s (measured 11.8 MB/s). At the default auto size
+(≈ 94 × 325 × 4 B ≈ 122 kB per frame) the network is not the bottleneck. Use `img.dtype` uint16/uint8 for
+large images on a slow link.
 
 ## 13. Fast-axis resolution is limited by the position-sensor ADC (found 2026-10-27)
 The fast position comes from IN2, a 14-bit ADC. `input_selector.v` shifts it left by 2, so the sensor
