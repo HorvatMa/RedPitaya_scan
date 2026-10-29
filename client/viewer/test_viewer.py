@@ -17,6 +17,38 @@ from rpsipm.protocol import (FRAME_HDR, Client, CommandError, pack_frame, parse_
 PORT = 5077
 
 
+def test_fill_empty():
+    from viewer import fill_empty
+
+    img = np.array([[1, np.nan, 3, np.nan],
+                    [np.nan] * 4,
+                    [5, 6, np.nan, 8]], np.float32)
+    out = fill_empty(img)
+    assert np.isnan(img).sum() == 7, "input must not be modified"
+    assert np.allclose(out[0], [1, 2, 3, 3])            # interior linear, end held
+    assert np.allclose(out[2], [5, 6, 7, 8])
+    assert np.allclose(out[1], (out[0] + out[2]) / 2)   # empty row from the rows around it
+    assert np.isnan(fill_empty(np.full((2, 3), np.nan, np.float32))).all()
+    print("fill empty ok")
+
+
+def test_square_fast_freq():
+    from viewer import square_fast_freq
+
+    cfg = {"acq.dec": "50", "slow.freq_actual": "3", "slow.rise": "0.975", "slow.shape": "sawtooth",
+           "img.roi": "0 1 0.02 0.98"}
+    f, n = square_fast_freq(cfg)
+    rate = 125e6 / 50
+    width = rate * 0.96 / (2 * np.pi * f)              # the server's auto formulas
+    height = f * 0.975 * 1.0 / 3
+    assert abs(width - height) < 1e-6 * width and abs(n - width) < 1e-6 * n, (f, n, width, height)
+    assert abs(f - 1084.1) < 0.1, f
+    tri = square_fast_freq(dict(cfg, **{"slow.shape": "triangle"}))
+    assert abs(tri[0] / f - np.sqrt(0.975 / 0.5)) < 1e-9     # half the image time -> sqrt(2x) faster
+    assert square_fast_freq({}) is None
+    print(f"square fast freq ok: {f:.1f} Hz -> {n:.0f} x {n:.0f}")
+
+
 def test_frame_roundtrip():
     data = np.arange(2 * 3 * 4, dtype=np.float32).reshape(2, 3, 4)
     data[0, 1, 2] = np.nan
@@ -144,6 +176,28 @@ def test_gui(screenshot):
     pump(0.5)
     print("roi crop/zoom ok")
 
+    # true aspect: one pixel is drawn as tall/wide as it is in galvo volts
+    win.img_sel.setCurrentIndex(0)
+    pump(0.5)
+    px = win.pixel_size(win.frame)
+    assert px is not None, "no pixel size from the config"
+    t = win.view.transform()
+    assert abs(t.m22() / t.m11() / (px[1] / px[0]) - 1) < 1e-3, (t.m22() / t.m11(), px)
+    win.aspect_box.setChecked(False)
+    pump(0.3)
+    t = win.view.transform()
+    assert abs(t.m22() / t.m11() - 1) < 1e-6, "square pixels when true aspect is off"
+    win.aspect_box.setChecked(True)
+    win.img_sel.setCurrentIndex(2)
+    pump(0.3)
+    print(f"true aspect ok: pixel {1e3 * px[0]:.3g} x {1e3 * px[1]:.3g} mV")
+
+    win.fill_box.setChecked(True)
+    pump(0.5)
+    assert np.isfinite(win.shown[:, :win.frame.width]).all(), "fill left empty pixels"
+    assert np.isnan(win.shown[:, win.frame.width:win.frame.width + 2]).all(), "side-by-side gap filled"
+    win.fill_box.setChecked(False)
+
     if screenshot:
         win.grab().save(screenshot)
         print(f"screenshot -> {screenshot}")
@@ -195,6 +249,8 @@ def test_drops(tmpdir):
 
 
 if __name__ == "__main__":
+    test_fill_empty()
+    test_square_fast_freq()
     test_frame_roundtrip()
     srv = subprocess.Popen([sys.executable, "mock_server.py", "--port", str(PORT)],
                            stdout=subprocess.DEVNULL)

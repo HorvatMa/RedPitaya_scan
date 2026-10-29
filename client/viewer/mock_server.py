@@ -27,7 +27,7 @@ DEFAULTS = {
     "acq.dec": "50", "acq.int_dec": "1",
     "img.width": "auto", "img.height": "auto", "img.bidir": "sum", "img.roi": "0 1 0.02 0.98",
     "img.dtype": "float32",
-    "cal.delay": "0.5", "cal.fast_gain": "1", "cal.fast_offset": "0",
+    "cal.delay": "0.5", "cal.fast_gain": "1", "cal.fast_offset": "0", "cal.fast_auto": "1", "fast.source": "internal",
 }
 CHOICES = {
     "slow.shape": {"sawtooth", "triangle"}, "fast.shape": {"sine", "triangle"},

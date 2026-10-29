@@ -7,7 +7,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-typedef enum { K_DOUBLE, K_UINT, K_SIZE, K_SLOW_SHAPE, K_FAST_SHAPE, K_BIDIR, K_DTYPE, K_ROI } kind_t;
+typedef enum { K_DOUBLE, K_UINT, K_SIZE, K_SLOW_SHAPE, K_FAST_SHAPE, K_FAST_SOURCE, K_BIDIR, K_DTYPE,
+               K_ROI } kind_t;
 
 typedef struct {
     const char *key;
@@ -26,6 +27,7 @@ static const keydef_t KEYS[] = {
     { "slow.amp",        K_DOUBLE,     F(slow_amp),        0, 1e3, 0 },
     { "slow.offset",     K_DOUBLE,     F(slow_offset),     -1e3, 1e3, 0 },
     { "fast.shape",      K_FAST_SHAPE, F(fast_shape),      0, 0, 0 },
+    { "fast.source",     K_FAST_SOURCE, F(fast_external),  0, 0, 0 },
     { "fast.freq",       K_DOUBLE,     F(fast_freq),       1e-3, 1e5, 0 },
     { "fast.amp",        K_DOUBLE,     F(fast_amp),        0, 1e3, 0 },
     { "fast.offset",     K_DOUBLE,     F(fast_offset),     -1e3, 1e3, 0 },
@@ -39,6 +41,7 @@ static const keydef_t KEYS[] = {
     { "cal.delay",       K_DOUBLE,     F(cal_delay),       -RECON_MAX_DELAY, RECON_MAX_DELAY, 0 },
     { "cal.fast_gain",   K_DOUBLE,     F(cal_fast_gain),   1e-3, 1e3, 0 },
     { "cal.fast_offset", K_DOUBLE,     F(cal_fast_offset), -1e3, 1e3, 0 },
+    { "cal.fast_auto",   K_UINT,       F(cal_fast_auto),   0, 1, 0 },
     { "hw.slow_gain",    K_DOUBLE,     F(hw_slow_gain),    1e-3, 1e3, 0 },
     { "hw.fast_gain",    K_DOUBLE,     F(hw_fast_gain),    1e-3, 1e3, 0 },
     { "hw.sensor_gain",  K_DOUBLE,     F(hw_sensor_gain),  1e-3, 1e3, 0 },
@@ -47,6 +50,7 @@ static const keydef_t KEYS[] = {
 
 static const char *SLOW_SHAPES[] = { [WF_SAWTOOTH] = "sawtooth", [WF_TRIANGLE] = "triangle" };
 static const char *FAST_SHAPES[] = { [WF_SINE] = "sine", [WF_TRIANGLE] = "triangle" };
+static const char *FAST_SOURCES[] = { "internal", "external" };
 static const char *DTYPES[] = { [PIX_FLOAT32] = "float32", [PIX_UINT16] = "uint16", [PIX_UINT8] = "uint8" };
 static const char *BIDIR[] = { [BIDIR_SUM] = "sum", [BIDIR_FORWARD] = "forward",
                                [BIDIR_BACKWARD] = "backward", [BIDIR_BOTH] = "both" };
@@ -61,7 +65,7 @@ void config_defaults(config_t *c)
         .acq_dec = 50, .int_dec = 1,
         .img_w = 0, .img_h = 0, .bidir = BIDIR_SUM, .dtype = PIX_FLOAT32,
         .roi = { 0.0, 1.0, 0.02, 0.98 },
-        .cal_delay = 0.5, .cal_fast_gain = 1.0, .cal_fast_offset = 0.0,
+        .cal_delay = 0.5, .cal_fast_gain = 1.0, .cal_fast_offset = 0.0, .cal_fast_auto = 1,
         .hw_slow_gain = 10.75, .hw_fast_gain = 10.75, .hw_sensor_gain = 20.0,
     };
 }
@@ -152,11 +156,13 @@ int config_set(config_t *c, const char *key, const char *value, char *err, size_
         return 0;
     case K_SLOW_SHAPE:
     case K_FAST_SHAPE:
+    case K_FAST_SOURCE:
     case K_BIDIR:
     case K_DTYPE: {
         const char **names = k->kind == K_SLOW_SHAPE ? SLOW_SHAPES : k->kind == K_FAST_SHAPE ? FAST_SHAPES
-                           : k->kind == K_BIDIR ? BIDIR : DTYPES;
-        int n = k->kind == K_SLOW_SHAPE ? 2 : k->kind == K_FAST_SHAPE ? 3 : k->kind == K_BIDIR ? 4 : 3;
+                           : k->kind == K_FAST_SOURCE ? FAST_SOURCES : k->kind == K_BIDIR ? BIDIR : DTYPES;
+        int n = k->kind == K_SLOW_SHAPE ? 2 : k->kind == K_FAST_SHAPE ? 3 : k->kind == K_FAST_SOURCE ? 2
+              : k->kind == K_BIDIR ? 4 : 3;
         int i = parse_enum(value, names, n);
         if (i < 0) {
             names_list(names, n, opts, sizeof(opts));
@@ -192,6 +198,8 @@ int config_derive(const config_t *c, derived_t *d, char *err, size_t errlen)
     d->fast = (wf_t){ .shape = c->fast_shape, .freq = c->fast_freq,
                       .amp = c->fast_amp / c->hw_fast_gain * COUNTS_PER_VOLT,
                       .offset = c->fast_offset / c->hw_fast_gain * COUNTS_PER_VOLT };
+    if (c->fast_external)                       /* external generator drives the galvo: OUT2 = 0 V */
+        d->fast.amp = d->fast.offset = 0.0;
     const struct { const char *name; wf_t *w; double gain; } ax[2] = {
         { "slow", &d->slow, c->hw_slow_gain }, { "fast", &d->fast, c->hw_fast_gain } };
     for (int i = 0; i < 2; i++) {
@@ -200,7 +208,7 @@ int config_derive(const config_t *c, derived_t *d, char *err, size_t errlen)
                    ax[i].name, ax[i].gain, ax[i].gain);
             return -1;
         }
-        if (ax[i].w->amp < 1.0) {
+        if (ax[i].w->amp < 1.0 && !(i == 1 && c->fast_external)) {
             seterr(err, errlen, "%s amplitude is below one DAC count", ax[i].name);
             return -1;
         }
@@ -218,6 +226,11 @@ int config_derive(const config_t *c, derived_t *d, char *err, size_t errlen)
     double xlo, xhi, ylo, yhi;
     scan_range(&d->slow, &xlo, &xhi);
     scan_range(&d->fast, &ylo, &yhi);
+    if (c->fast_external) {
+        ylo = -EXT_FAST_RANGE;
+        yhi = EXT_FAST_RANGE;
+    }
+    double frac = c->slow_shape == WF_TRIANGLE ? 0.5 : c->slow_rise;
 
     recon_cfg_t *r = &d->recon;
     *r = (recon_cfg_t){
@@ -230,17 +243,37 @@ int config_derive(const config_t *c, derived_t *d, char *err, size_t errlen)
         .bidir = c->bidir,
         .slow_bidir = c->slow_shape == WF_TRIANGLE,
         .dir_window = 4,
+        .fast_auto = c->cal_fast_auto != 0 || c->fast_external,
+        .fast_triangle = c->fast_shape == WF_TRIANGLE,
+        .fast_cycles = c->fast_external ? 0.0 : d->fast.freq_actual / d->rate,
+        .fast_cmd_lo = ylo, .fast_cmd_hi = yhi,
+        .fast_external = c->fast_external,
+        .sample_rate = d->rate,
+        .slow_freq = d->slow.freq_actual, .slow_frac = frac,
+        .roi_h = c->roi[1] - c->roi[0], .roi_w = c->roi[3] - c->roi[2],
+        .width_auto = c->img_w == 0,
+        .sensor_step = SENSOR_LSB,
     };
     uint16_t aw, ah;
-    double frac = c->slow_shape == WF_TRIANGLE ? 0.5 : c->slow_rise;
     recon_auto_size(d->rate, d->slow.freq_actual, d->fast.freq_actual, frac, 1920, 1080, &aw, &ah);
-    /* a column narrower than one sensor step can never be hit reliably */
+    /* a column narrower than one sensor step can never be hit reliably; with cal.fast_auto
+       the sensor scale is only known after the start-up fit, so the reconstruction applies
+       the cap then (img.width_actual is an upper bound until then) */
     double sensor_levels = (r->y_hi - r->y_lo) / (SENSOR_LSB * sensor_to_cmd);
     d->sensor_levels = sensor_levels;
-    double w = c->img_w ? c->img_w : fmax(1.0, fmin(aw * (c->roi[3] - c->roi[2]), sensor_levels));
+    double w = c->img_w ? c->img_w : fmax(1.0, aw * (c->roi[3] - c->roi[2]));
+    if (!c->img_w && !c->cal_fast_auto)
+        w = fmax(1.0, fmin(w, sensor_levels));
     double h = c->img_h ? c->img_h : fmax(1.0, ah * (c->roi[1] - c->roi[0]));
     r->width = (uint16_t)w;
     r->height = (uint16_t)h;
+    if (c->fast_external) {                     /* auto sizes follow the measured frequency */
+        d->sensor_levels = 0.0;
+        if (!c->img_w)
+            r->width = 0;
+        if (!c->img_h)
+            r->height = 0;
+    }
 
     d->hw = (hw_setup_t){
         .wfm1 = d->wfm1, .len1 = d->slow.len, .dec1 = d->slow.dec,
@@ -280,6 +313,7 @@ void config_format(const config_t *c, const derived_t *d, char *buf, size_t len)
             break;
         case K_SLOW_SHAPE: pos = put(buf, len, pos, "%s=%s\n", k->key, SLOW_SHAPES[*(const int *)p]); break;
         case K_FAST_SHAPE: pos = put(buf, len, pos, "%s=%s\n", k->key, FAST_SHAPES[*(const int *)p]); break;
+        case K_FAST_SOURCE: pos = put(buf, len, pos, "%s=%s\n", k->key, FAST_SOURCES[*(const int *)p]); break;
         case K_BIDIR:      pos = put(buf, len, pos, "%s=%s\n", k->key, BIDIR[*(const int *)p]); break;
         case K_DTYPE:      pos = put(buf, len, pos, "%s=%s\n", k->key, DTYPES[*(const int *)p]); break;
         case K_ROI: {

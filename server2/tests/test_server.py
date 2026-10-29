@@ -76,13 +76,18 @@ def test_scan():
     assert ids == list(range(ids[0], ids[0] + len(ids))), f"gaps in frame ids: {ids}"
     assert ids[0] == 0
     f = frames[-1]
-    assert (f.width, f.height, f.n_images) == (w, h, 1), (f.width, f.height, w, h)
+    st = status[-1]
+    # cal.fast_auto (default): width_actual is an upper bound; the sensor-step cap is applied
+    # after the start-up fit, and the fit must reproduce the fake sensor's scale (gain 1 here)
+    assert st["fast_cal"] == "done", st
+    assert abs(float(st["fast_cal_gain"]) - 1.0) < 0.01 and abs(float(st["fast_cal_offset"])) < 0.01, st
+    assert int(st["img_width_run"]) == min(w, int(float(st["fast_levels"]))), st
+    assert (f.width, f.height, f.n_images) == (int(st["img_width_run"]), h, 1), (f.width, f.height, st)
     assert np.allclose(f.roi, (0, 1, 0.02, 0.98), atol=1e-6)
     assert abs(f.slow_freq - 10.0) < 1e-3 and f.fast_freq == 1000.0
     finite = np.isfinite(f.data)
     assert finite.mean() > 0.95, f"too many empty pixels: {1 - finite.mean():.2%}"
     assert 1000 < np.nanmean(f.data) < 16000 and np.nanstd(f.data) > 300, (np.nanmean(f.data), np.nanstd(f.data))
-    st = status[-1]
     assert st["state"] == "running" and st["hw"] == "fake"
     assert abs(float(st["rate_rec_s"]) - 2.5e6) < 0.25e6, st["rate_rec_s"]
     assert int(st["chunks_lost"]) == 0
@@ -160,6 +165,45 @@ def test_slow_client_drops():
     c.close()
 
 
+def test_external():
+    """fast.source external: the fake galvo follows a 613.7 Hz sine 'generator' (RPSIPM_FAKE_EXT),
+    OUT2 is idle; frequency, scale and auto size must come from the sensor."""
+    f_ext = 613.7
+    env = dict(os.environ, RPSIPM_FAKE_EXT=f"{f_ext} 9000 -1500")
+    srv = subprocess.Popen([SERVER, "-p", str(PORT + 1)], stdout=subprocess.DEVNULL, env=env)
+    try:
+        wait_port(PORT + 1)
+        frames, status = [], []
+        c = Client("127.0.0.1", PORT + 1, on_frame=frames.append, on_status=status.append)
+        c.set("fast.source", "external")
+        c.set("slow.freq", "10")
+        cfg = c.get_config()
+        assert cfg["fast.source"] == "external" and cfg["img.width_actual"] == "0", cfg
+        c.command("start")
+        time.sleep(2.5)
+        st = parse_kv(c.command("get status"))
+        assert st["fast_cal"] == "done" and st["fast_source"] == "external", st
+        assert abs(float(st["fast_hz"]) / f_ext - 1) < 1e-4, st["fast_hz"]
+        w_auto = int(int(2.5e6 / (2 * np.pi * f_ext)) * 0.96)
+        f = frames[-1]
+        assert f.width == w_auto == int(st["img_width_run"]), (f.width, w_auto, st)
+        assert abs(f.fast_freq / f_ext - 1) < 1e-4, f.fast_freq
+        assert np.isfinite(f.data).mean() > 0.95, f"too many empty pixels: {1 - np.isfinite(f.data).mean():.2%}"
+
+        c.set("img.roi", "0.25 0.75 0.3 0.7")            # live window: reuses the measured frequency
+        n0 = len(frames)
+        time.sleep(1.0)
+        new = [fr for fr in frames[n0:] if np.allclose(fr.roi, (0.25, 0.75, 0.3, 0.7), atol=1e-6)]
+        assert new and new[-1].width == int(int(2.5e6 / (2 * np.pi * f_ext)) * 0.4), new[-1].width if new else None
+        c.command("stop")
+        c.close()
+    finally:
+        srv.terminate()
+        srv.wait(5)
+    print(f"external fast drive ok: {float(st['fast_hz']):.3f} Hz measured, {f.width}x{f.height}, "
+          f"then {new[-1].width}x{new[-1].height}")
+
+
 if __name__ == "__main__":
     srv = subprocess.Popen([SERVER, "-p", str(PORT)], stdout=subprocess.DEVNULL)
     try:
@@ -172,4 +216,5 @@ if __name__ == "__main__":
         srv.terminate()
         rc = srv.wait(5)
     assert rc == 0, f"server exit code {rc}"
+    test_external()
     print("all server tests passed (clean shutdown)")

@@ -43,6 +43,7 @@ Keys (volts are at the galvo/driver side):
 | `slow.freq` | Hz | 3 |
 | `slow.amp`, `slow.offset` | V | — |
 | `fast.shape` | `sine` \| `triangle` | sine |
+| `fast.source` | `internal`: OUT2 drives the fast galvo. `external`: a signal generator drives it, OUT2 stays at 0 V and `fast.freq`/`fast.amp`/`fast.offset` are ignored. At every `start` the server measures the frequency from IN2 (rising crossings of the sweep centre over 0.2 s, after 0.02 s settling and 0.05 s for the level), then fits it as with `cal.fast_auto` (forced on). Auto width/height are computed from the measured frequency (`img.width_actual`/`img.height_actual` = 0 until then); the window `img.roi` y is a fraction of the measured sweep. No sweep found → `fast_cal=failed`, no frames, retried continuously. The viewer's zoom then changes only the slow scan and crops the fast axis. | internal |
 | `fast.freq` | Hz | 1000 |
 | `fast.amp`, `fast.offset` | V | — |
 | `acq.dec` | int ≥ 1 | 50 |
@@ -52,7 +53,8 @@ Keys (volts are at the galvo/driver side):
 | `img.dtype` | `float32` \| `uint16` \| `uint8`: pixel format on the wire. *live*: applied to the next frame sent. | float32 |
 | `img.roi` | `x0 x1 y0 y1`: image window as fractions (0..1) of the full commanded range, slow (x, rows) then fast (y, columns); `x0 < x1`, `y0 < y1`. *live*: applied from the next frame. Auto width/height scale with the window. | `0 1 0.02 0.98` |
 | `cal.delay` | samples | 0.5 |
-| `cal.fast_gain`, `cal.fast_offset` | sensor → command calibration | — |
+| `cal.fast_gain`, `cal.fast_offset` | sensor → command calibration (used when `cal.fast_auto 0`; the sign of `cal.fast_gain` is also used with auto) | — |
+| `cal.fast_auto` | `1`: at every `start`, settle ≤ 4 fast periods, then fit `a·sin + b·cos + c` (known fast frequency) to IN2 over 2–20 whole periods (~50 ms at 2.5 MS/s, 500 Hz) and map the measured sweep onto the commanded fast range. No frames until done; result in STATUS. A triangle uses its fundamental × π²/8. Live `img.roi` changes reuse the fit. With auto width, the sensor-step cap is applied after the fit, so `img.width_actual` is an upper bound (see `img_width_run`). `0`: fixed gains as before. | 1 |
 
 ## FRAME (RP → PC)
 Payload = 72-byte frame header followed by `n_images × height × width` pixels in the format `dtype`, row-major. Image 0 is
@@ -100,4 +102,10 @@ Bytes per frame = 72 + n_images·W·H·(4|2|1). For orientation, on the measured
 ## STATUS (RP → PC)
 Sent about once per second, unsolicited. ASCII `key=value` lines. Keys include `state`
 (`idle`/`running`/`error`), `rate_rec_s`, `frames_sent`, `frames_dropped`, `chunks_lost`, `ring_fill`
-and `cpu`. Clients must ignore unknown keys.
+and `cpu`. Fast-axis calibration: `fast_cal` (`manual`/`pending`/`done`/`failed`: failed = IN2 sweep < 16 counts,
+manual gains kept), `fast_cal_gain` and `fast_cal_offset` (the fit as equivalent `cal.fast_gain` / `cal.fast_offset`
+values), `in2_amp_v` / `in2_mid_v` (measured IN2 amplitude and centre at the RP input, assuming ±1 V ↔ ±32767,
+unverified), `fast_levels` (sensor steps across the image window), `img_width_run` (width in use),
+`fast_source` (`internal`/`external`) and `fast_hz` (fast frequency in use, measured with `external`; 0 until known).
+With `external`, `fast_cal_gain`/`fast_cal_offset` refer to an internal virtual scale and have no physical meaning.
+Clients must ignore unknown keys.

@@ -60,6 +60,8 @@ struct app {
     int              lost_in_frame;
     float            cur_roi[4];
     float            slow_freq, fast_freq;
+    recon_fcal_t     fcal;            /* fast-axis calibration of this run; written by the recon
+                                         thread under the lock, kept across live rebuilds */
 
     /* status rate */
     uint64_t         st_records;
@@ -223,11 +225,27 @@ static void *recon_thread(void *arg)
             pthread_mutex_lock(&a->lock);
             recon_cfg_t rc = a->pending_cfg;
             memcpy(a->cur_roi, a->pending_roi, sizeof(a->cur_roi));
+            if (a->fcal.state == FCAL_DONE) {               /* reuse this run's fit */
+                rc.fast_auto = 0;
+                rc.fast_gain = a->fcal.gain;
+                rc.fast_offset = a->fcal.offset;
+                rc.fast_cycles = a->fcal.fast_hz / rc.sample_rate;   /* measured if external */
+            }
             pthread_mutex_unlock(&a->lock);
             recon_t *nr = recon_create(&rc, on_frame, a);
             if (nr) {
                 recon_destroy(a->recon);
                 a->recon = nr;
+                recon_fcal_t f;
+                recon_fast_cal(nr, &f);
+                pthread_mutex_lock(&a->lock);
+                if (a->fcal.state == FCAL_DONE) {           /* the window sets levels and width */
+                    a->fcal.levels = f.levels;
+                    a->fcal.width = f.width;
+                } else {
+                    a->fcal = f;
+                }
+                pthread_mutex_unlock(&a->lock);
             }
         }
         size_t n = ring_read(&a->ring, buf, CHUNK);
@@ -242,6 +260,18 @@ static void *recon_thread(void *arg)
             a->lost_in_frame = 1;          /* records missing inside the current frame */
         }
         recon_push(a->recon, buf, n);
+        /* only this thread changes it; external drive retries after FAILED */
+        if (a->fcal.state == FCAL_PENDING || a->fcal.state == FCAL_FAILED) {
+            recon_fcal_t f;
+            recon_fast_cal(a->recon, &f);
+            if (f.state != FCAL_PENDING) {
+                pthread_mutex_lock(&a->lock);
+                a->fcal = f;
+                if (f.state == FCAL_DONE)
+                    a->fast_freq = (float)f.fast_hz;       /* frame headers: measured if external */
+                pthread_mutex_unlock(&a->lock);
+            }
+        }
     }
     free(buf);
     return NULL;
@@ -279,6 +309,7 @@ static int start_locked(app_t *a, char *out, size_t outlen)
     }
     recon_destroy(a->recon);
     a->recon = r;
+    recon_fast_cal(r, &a->fcal);
     ring_reset(&a->ring);
     atomic_store(&a->records_total, 0);
     atomic_store(&a->records_lost, 0);
@@ -485,14 +516,25 @@ void app_status(app_t *a, char *buf, size_t len)
     a->st_cpu = cpu;
     a->st_records = rec;
     const char *state = a->hw_error ? "error" : a->running ? "running" : "idle";
+    static const char *const FCAL_NAMES[] = { [FCAL_MANUAL] = "manual", [FCAL_PENDING] = "pending",
+                                              [FCAL_DONE] = "done", [FCAL_FAILED] = "failed" };
+    const recon_fcal_t *f = &a->fcal;
     snprintf(buf, len,
              "state=%s\nhw=%s\nrate_rec_s=%.0f\nrecords_total=%llu\nframes_made=%llu\n"
              "frames_sent=%llu\nframes_dropped=%llu\nchunks_lost=%lu\nrecords_lost=%llu\n"
-             "ring_fill=%.4f\ncpu=%.3f",
+             "ring_fill=%.4f\ncpu=%.3f\n"
+             "fast_cal=%s\nfast_cal_gain=%.6g\nfast_cal_offset=%.6g\nin2_amp_v=%.6g\nin2_mid_v=%.6g\n"
+             "fast_levels=%.0f\nimg_width_run=%u\nfast_source=%s\nfast_hz=%.8g",
              state, hw_name(a->hw), rate, (unsigned long long)rec,
              (unsigned long long)a->frames_made, (unsigned long long)a->frames_sent,
              (unsigned long long)a->frames_dropped, (unsigned long)atomic_load(&a->chunks_lost),
              (unsigned long long)atomic_load(&a->records_lost),
-             (double)ring_used(&a->ring) / ring_capacity(&a->ring), load);
+             (double)ring_used(&a->ring) / ring_capacity(&a->ring), load,
+             FCAL_NAMES[f->state],
+             f->gain * a->cfg.hw_fast_gain / a->cfg.hw_sensor_gain,   /* as cal.fast_gain */
+             f->offset * a->cfg.hw_fast_gain / COUNTS_PER_VOLT,       /* as cal.fast_offset */
+             f->sensor_amp / COUNTS_PER_VOLT, f->sensor_mid / COUNTS_PER_VOLT,
+             f->levels, (unsigned)f->width, a->cfg.fast_external ? "external" : "internal",
+             f->state == FCAL_DONE || f->state == FCAL_MANUAL ? f->fast_hz : 0.0);
     pthread_mutex_unlock(&a->lock);
 }

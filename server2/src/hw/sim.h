@@ -24,6 +24,8 @@ typedef struct {
     double   noise;                             /* sensor noise, counts rms */
     unsigned sensor_lsb;                        /* sensor reads in multiples of this (FPGA: 4) */
     double   x_lo, x_hi, y_lo, y_hi;            /* range used to normalise the pattern */
+    double   ext_amp, ext_offset, ext_freq;     /* ext_amp > 0: the fast mirror follows an external
+                                                   sine (counts, Hz) instead of OUT2 */
     sim_pattern_t pattern;
     uint32_t seed;
 } sim_cfg_t;

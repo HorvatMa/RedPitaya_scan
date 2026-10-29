@@ -7,6 +7,7 @@
 #include "sim.h"
 
 #include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -87,6 +88,11 @@ int hw_configure(hw_t *hw, const hw_setup_t *s)
         .x_lo = -32768, .x_hi = 32767, .y_lo = -32768, .y_hi = 32767,
         .pattern = pattern, .seed = 12345,
     };
+    /* RPSIPM_FAKE_EXT="freq_hz amp offset" (mirror counts): the fast galvo follows an external
+       sine generator instead of OUT2 (tests of fast.source external) */
+    const char *ext = getenv("RPSIPM_FAKE_EXT");
+    if (ext && sscanf(ext, "%lf %lf %lf", &c.ext_freq, &c.ext_amp, &c.ext_offset) != 3)
+        c.ext_amp = 0.0;
     sim_init(&hw->sim, &c);
     hw->rate = FPGA_CLK_HZ / s->acq_dec;
     hw->configured = 1;

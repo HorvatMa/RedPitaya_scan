@@ -11,7 +11,7 @@
 typedef enum { BIDIR_SUM, BIDIR_FORWARD, BIDIR_BACKWARD, BIDIR_BOTH } bidir_t;
 
 typedef struct {
-    uint16_t width, height;
+    uint16_t width, height;     /* 0 (auto) only with fast_external: sized after the measurement */
     double   x_lo, x_hi;        /* slow command range mapped onto rows, counts      */
     double   y_lo, y_hi;        /* fast range mapped onto columns, command counts    */
     double   fast_gain;         /* y_cal = fast_gain * y + fast_offset               */
@@ -21,7 +21,40 @@ typedef struct {
     bidir_t  bidir;
     int      slow_bidir;        /* 1: both slow directions are image (triangle scan) */
     unsigned dir_window;        /* samples used for the fast-direction estimate      */
+
+    /* Fast-axis auto-calibration: at the start of the run, fit the sensor over a few fast periods
+       and choose fast_gain/fast_offset so the measured sweep maps onto the commanded range
+       fast_cmd_lo..fast_cmd_hi (the sign of fast_gain is kept). No frames until it is done. */
+    int      fast_auto;
+    int      fast_triangle;     /* fast waveform is a triangle (else sine)               */
+    double   fast_cycles;       /* fast periods per record (f_fast / sample rate); 0 with
+                                   fast_external: measured from the sensor at start      */
+    double   fast_cmd_lo, fast_cmd_hi;   /* full commanded fast range, counts           */
+
+    /* Fast axis driven by an external generator (OUT2 idle): the frequency is measured from
+       the sensor zero crossings, then fitted as above (fast_auto is required). The commanded
+       range is then only a virtual scale for the measured sweep. */
+    int      fast_external;
+    double   sample_rate;       /* records per second                                    */
+    double   slow_freq, slow_frac;       /* for the auto size after the measurement      */
+    double   roi_h, roi_w;      /* window spans (fractions), slow and fast               */
+
+    /* auto width: cap the width at the number of sensor steps across y_lo..y_hi */
+    int      width_auto;
+    double   sensor_step;       /* sensor counts per ADC step                            */
 } recon_cfg_t;
+
+typedef enum { FCAL_MANUAL, FCAL_PENDING, FCAL_DONE, FCAL_FAILED } fcal_state_t;
+
+typedef struct {
+    fcal_state_t state;
+    double   gain, offset;      /* y_cal = gain * sensor + offset (in use)              */
+    double   sensor_amp;        /* measured sweep, raw sensor counts: amplitude, centre  */
+    double   sensor_mid;
+    double   levels;            /* sensor steps across the image window                  */
+    double   fast_hz;           /* fast frequency in use (measured with fast_external)   */
+    uint16_t width;             /* image width in use                                    */
+} recon_fcal_t;
 
 typedef struct {
     uint32_t     frame_id;
@@ -44,6 +77,9 @@ void     recon_destroy(recon_t *r);
 
 /* Feed records in acquisition order. Calls cb for every completed frame. */
 void     recon_push(recon_t *r, const record_t *rec, size_t n);
+
+/* Fast-axis calibration state and the mapping in use. */
+void     recon_fast_cal(const recon_t *r, recon_fcal_t *out);
 
 /* Drop the partial frame and wait for the next slow turn-around (e.g. after data loss). */
 void     recon_resync(recon_t *r);

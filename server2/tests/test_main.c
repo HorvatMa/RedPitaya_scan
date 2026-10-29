@@ -76,8 +76,11 @@ typedef struct {
     double   empty_frac;
     uint64_t used;
     recon_cfg_t cfg;
+    recon_fcal_t fcal;
     const char *dump_name;
 } result_t;
+
+static int autocal;     /* run_scan: start from wrong fast gains and let the recon fit them */
 
 static void on_frame(void *ctx, const frame_t *f)
 {
@@ -140,6 +143,7 @@ static result_t run_scan(bidir_t bidir, double delay, double frames, const char 
     double x_lo, x_hi, y_lo, y_hi;
     scan_range(&slow, &x_lo, &x_hi);
     scan_range(&fast, &y_lo, &y_hi);
+    double cmd_lo = y_lo, cmd_hi = y_hi;
     double margin = 0.02 * (y_hi - y_lo);
     y_lo += margin;
     y_hi -= margin;
@@ -156,6 +160,16 @@ static result_t run_scan(bidir_t bidir, double delay, double frames, const char 
     c->v_scale = 1.0 / (acq_dec - 1);
     c->bidir = bidir;
     c->dir_window = 4;
+    if (autocal) {
+        c->fast_gain = 10.0;            /* far off: a cap from this gain would shrink the width */
+        c->width_auto = 1;
+        c->sensor_step = 4.0;
+        c->fast_offset = 0.0;
+        c->fast_auto = 1;
+        c->fast_cycles = fast.freq_actual / rate;
+        c->fast_cmd_lo = cmd_lo;
+        c->fast_cmd_hi = cmd_hi;
+    }
 
     sim_cfg_t sc = {
         .wfm1 = w1, .len1 = slow.len, .dec1 = slow.dec,
@@ -179,6 +193,7 @@ static result_t run_scan(bidir_t bidir, double delay, double frames, const char 
         sim_next(&sim, buf, 4096);
         recon_push(r, buf, 4096);
     }
+    recon_fast_cal(r, &res.fcal);
     recon_destroy(r);
     return res;
 }
@@ -193,6 +208,94 @@ static void test_recon_sum(void)
     CHECK(res.n_frames >= 2, "expected >= 2 complete frames, got %d", res.n_frames);
     CHECK(res.rms_err < 0.02 * 16383, "rms error %.1f too large", res.rms_err);
     CHECK(res.empty_frac < 0.10, "too many empty pixels: %.1f %%", 100 * res.empty_frac);
+}
+
+static void test_fast_autocal(void)
+{
+    printf("test_fast_autocal\n");
+    autocal = 1;
+    result_t res = run_scan(BIDIR_SUM, 0.5, 3.2, NULL);
+    autocal = 0;
+    printf("  state %d, gain %.4f (true 1.25), offset %.1f (true 300), sensor amp %.1f mid %.1f, "
+           "frames %d, rms %.1f, empty %.1f %%\n", res.fcal.state, res.fcal.gain, res.fcal.offset,
+           res.fcal.sensor_amp, res.fcal.sensor_mid, res.n_frames, res.rms_err, 100 * res.empty_frac);
+    CHECK(res.fcal.state == FCAL_DONE, "calibration not done (state %d)", res.fcal.state);
+    CHECK(fabs(res.fcal.gain / 1.25 - 1.0) < 0.005, "gain %.4f, expected 1.25", res.fcal.gain);
+    CHECK(fabs(res.fcal.offset - 300.0) < 20.0, "offset %.1f, expected 300", res.fcal.offset);
+    CHECK(res.fcal.width == res.cfg.width, "width %u, expected %u (cap from the fitted gain)",
+          res.fcal.width, res.cfg.width);
+    CHECK(res.n_frames >= 2, "expected >= 2 complete frames, got %d", res.n_frames);
+    CHECK(res.rms_err < 0.02 * 16383, "rms error %.1f too large", res.rms_err);
+    CHECK(res.empty_frac < 0.10, "too many empty pixels: %.1f %%", 100 * res.empty_frac);
+}
+
+/* Fast mirror driven by an external generator (OUT2 unused): frequency, scale and size are
+   all taken from the sensor at start. */
+static void test_fast_external(void)
+{
+    printf("test_fast_external\n");
+    static int16_t w1[WFM1_MAX_LEN], w2[WFM2_MAX_LEN];
+    wf_t slow = { .shape = WF_SAWTOOTH, .rise = 0.975, .amp = 8000, .offset = -500, .freq = 3.0 };
+    wf_t fast = { .shape = WF_SINE, .amp = 0, .offset = 0, .freq = 1000.0 };   /* OUT2 idle */
+    scan_quantise(&slow, 256, WFM1_MAX_LEN);
+    scan_quantise(&fast, 256, WFM2_MAX_LEN);
+    scan_fill(&slow, w1);
+    scan_fill(&fast, w2);
+
+    const uint32_t acq_dec = 50;
+    const double   rate = FPGA_CLK_HZ / acq_dec, f_ext = 731.3, amp = 7000, off = -1200;
+    double x_lo, x_hi;
+    scan_range(&slow, &x_lo, &x_hi);
+
+    result_t res = { 0 };
+    recon_cfg_t *c = &res.cfg;
+    *c = (recon_cfg_t){
+        .x_lo = x_lo, .x_hi = x_hi, .y_lo = -0.96 * 16384, .y_hi = 0.96 * 16384,
+        .fast_gain = 1.0, .delay = 0.5, .v_scale = 1.0 / (acq_dec - 1), .bidir = BIDIR_SUM,
+        .dir_window = 4, .fast_auto = 1, .fast_external = 1,
+        .fast_cmd_lo = -16384, .fast_cmd_hi = 16384,
+        .sample_rate = rate, .slow_freq = slow.freq_actual, .slow_frac = slow.rise,
+        .roi_h = 1.0, .roi_w = 0.96, .width_auto = 1, .sensor_step = 4.0,
+    };
+    sim_cfg_t sc = {
+        .wfm1 = w1, .len1 = slow.len, .dec1 = slow.dec,
+        .wfm2 = w2, .len2 = fast.len, .dec2 = fast.dec,
+        .acq_dec = acq_dec, .sensor_gain = 1.25, .sensor_offset = 300.0, .noise = 2.0,
+        .x_lo = x_lo, .x_hi = x_hi, .y_lo = off - 0.96 * amp, .y_hi = off + 0.96 * amp,
+        .ext_amp = amp, .ext_offset = off, .ext_freq = f_ext,
+        .pattern = smooth_pattern, .seed = 11,
+    };
+    sim_t sim;
+    sim_init(&sim, &sc);
+    recon_t *r = recon_create(c, on_frame, &res);
+    CHECK(r != NULL, "external config rejected");
+    if (!r)
+        return;
+    record_t buf[4096];
+    uint64_t total = (uint64_t)(3.5 * rate / slow.freq_actual);
+    for (uint64_t done = 0; done < total; done += 4096) {
+        sim_next(&sim, buf, 4096);
+        recon_push(r, buf, 4096);
+    }
+    recon_fast_cal(r, &res.fcal);
+    recon_destroy(r);
+
+    uint16_t aw, ah;
+    recon_auto_size(rate, slow.freq_actual, f_ext, slow.rise, 1920, 1080, &aw, &ah);
+    printf("  state %d, %.3f Hz (true %.1f), sensor amp %.1f (true %.1f) mid %.1f (true %.1f), "
+           "width %u (auto %u), frames %d, rms %.1f, empty %.1f %%\n", res.fcal.state,
+           res.fcal.fast_hz, f_ext, res.fcal.sensor_amp, amp / 1.25, res.fcal.sensor_mid,
+           (off - 300) / 1.25, res.fcal.width, (unsigned)(aw * 0.96), res.n_frames, res.rms_err,
+           100 * res.empty_frac);
+    CHECK(res.fcal.state == FCAL_DONE, "calibration not done (state %d)", res.fcal.state);
+    CHECK(fabs(res.fcal.fast_hz / f_ext - 1.0) < 1e-4, "frequency %.4f, expected %.1f",
+          res.fcal.fast_hz, f_ext);
+    CHECK(fabs(res.fcal.sensor_amp / (amp / 1.25) - 1.0) < 0.003, "amplitude %.1f", res.fcal.sensor_amp);
+    CHECK(fabs(res.fcal.sensor_mid - (off - 300) / 1.25) < 5.0, "centre %.1f", res.fcal.sensor_mid);
+    CHECK(res.fcal.width == (uint16_t)(aw * 0.96), "width %u", res.fcal.width);
+    CHECK(res.n_frames >= 2, "expected >= 2 complete frames, got %d", res.n_frames);
+    CHECK(res.rms_err < 0.02 * 16383, "rms error %.1f too large", res.rms_err);
+    CHECK(res.empty_frac < 0.15, "too many empty pixels: %.1f %%", 100 * res.empty_frac);
 }
 
 static void test_delay_alignment(void)
@@ -232,6 +335,8 @@ int main(void)
     test_fill();
     test_invalid_cfg();
     test_recon_sum();
+    test_fast_autocal();
+    test_fast_external();
     test_delay_alignment();
     printf(failures ? "%d FAILURE(S)\n" : "all tests passed\n", failures);
     return failures ? 1 : 0;

@@ -29,12 +29,14 @@ CONFIG_FIELDS = [
     ("fast.amp", "Fast amp [V]", "float", dict(lo=0, hi=20, dec=4)),
     ("fast.offset", "Fast offset [V]", "float", dict(lo=-20, hi=20, dec=4)),
     ("fast.shape", "Fast shape", "choice", dict(items=["sine", "triangle"])),
+    ("fast.source", "Fast drive", "choice", dict(items=["internal", "external"])),
     ("acq.dec", "Acq. decimation", "int", dict(lo=1, hi=1_000_000)),
     ("img.width", "Width [px]", "size", dict(hi=1920)),
     ("img.height", "Height [px]", "size", dict(hi=1080)),
     ("img.bidir", "Bidirectional", "choice", dict(items=["sum", "forward", "backward", "both"])),
     ("img.dtype", "Pixel format", "choice", dict(items=["float32", "uint16", "uint8"])),
     ("cal.delay", "Delay [samples]", "float", dict(lo=-60, hi=60, dec=2)),
+    ("cal.fast_auto", "Fast auto-cal (IN2 fit)", "choice", dict(items=["1", "0"])),
 ]
 
 DEFAULT_ROI = (0.0, 1.0, 0.02, 0.98)       # x0 x1 (slow, rows), y0 y1 (fast, columns)
@@ -47,6 +49,46 @@ def parse_roi(text):
 
 def roi_text(roi):
     return " ".join(f"{v:.6g}" for v in roi)
+
+
+def _fill_rows(img):
+    """Linear interpolation of NaN pixels along each row from the finite ones (ends held)."""
+    x = np.arange(img.shape[1])
+    for row in img:
+        bad = np.isnan(row)
+        if bad.any() and not bad.all():
+            row[bad] = np.interp(x[bad], x[~bad], row[~bad])
+
+
+def fill_empty(img):
+    """Copy of img with empty (NaN) pixels interpolated: along the fast axis (rows) first,
+    then along the slow axis for rows that had no data at all. Display only."""
+    out = np.array(img, dtype=np.float32)
+    if np.isnan(out).any():
+        _fill_rows(out)
+        _fill_rows(out.T)
+    return out
+
+
+def square_fast_freq(cfg):
+    """Fast frequency at which the server's auto width equals the auto height, and that size.
+
+    width = R*w / (2*pi*f_fast)  (two samples per column at the sine centre)
+    height = f_fast * rho * h / f_slow  (one row per fast period during the image sweep)
+    with R = 125 MHz / acq.dec, rho = slow.rise (0.5 for a triangle), w/h = window spans.
+    The server's 1920 x 1080 cap and the sensor-step cap on the width are not included.
+    Returns (f_fast, n) or None.
+    """
+    try:
+        rate = 125e6 / float(cfg["acq.dec"])
+        f_slow = float(cfg["slow.freq_actual"] if "slow.freq_actual" in cfg else cfg["slow.freq"])
+        rho = 0.5 if cfg.get("slow.shape") == "triangle" else float(cfg["slow.rise"])
+        x0, x1, y0, y1 = parse_roi(cfg.get("img.roi", roi_text(DEFAULT_ROI)))
+    except (KeyError, ValueError, ZeroDivisionError):
+        return None
+    w, h = y1 - y0, x1 - x0
+    f = np.sqrt(rate * f_slow * w / (2 * np.pi * rho * h))
+    return f, rate * w / (2 * np.pi * f)
 
 
 def colormap_lut(name):
@@ -174,6 +216,7 @@ class ImageView(QtWidgets.QGraphicsView):
         self.setMouseTracking(True)
         self._fit = True
         self._size = None
+        self.aspect = 1.0               # displayed pixel height / width; scene stays in pixels
         self._selecting = False
         self._sel_start = None
         self.sel_item = QtWidgets.QGraphicsRectItem()
@@ -225,12 +268,32 @@ class ImageView(QtWidgets.QGraphicsView):
             self.scene().setSceneRect(0, 0, *size)
             self._fit = True
         if self._fit:
-            self.fitInView(self.item, QtCore.Qt.KeepAspectRatio)
+            self.fit()
+
+    def set_aspect(self, aspect):
+        aspect = min(max(aspect, 1e-3), 1e3)
+        if abs(aspect / self.aspect - 1.0) < 1e-3:
+            return
+        t = self.transform()
+        self.setTransform(QtGui.QTransform.fromScale(t.m11(), t.m11() * aspect))
+        self.aspect = aspect
+        if self._fit:
+            self.fit()
+
+    def fit(self):
+        """Fit the image into the view with pixels drawn `aspect` times taller than wide."""
+        r = self.item.boundingRect()
+        vp = self.viewport().rect()
+        if r.isEmpty() or vp.isEmpty():
+            return
+        s = min(vp.width() / r.width(), vp.height() / (r.height() * self.aspect))
+        self.setTransform(QtGui.QTransform.fromScale(s, s * self.aspect))
+        self.centerOn(self.item)
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
         if self._fit:
-            self.fitInView(self.item, QtCore.Qt.KeepAspectRatio)
+            self.fit()
 
     def wheelEvent(self, e):
         self._fit = False
@@ -239,7 +302,7 @@ class ImageView(QtWidgets.QGraphicsView):
 
     def mouseDoubleClickEvent(self, e):
         self._fit = True
-        self.fitInView(self.item, QtCore.Qt.KeepAspectRatio)
+        self.fit()
 
     def mouseMoveEvent(self, e):
         super().mouseMoveEvent(e)
@@ -419,11 +482,18 @@ class Viewer(QtWidgets.QMainWindow):
         self.img_sel.addItems(["image 0 (sum / forward)", "image 1 (backward)", "side by side",
                                "difference 0 − 1"])
         self.img_sel.currentIndexChanged.connect(self.redraw)
+        self.fill_box = QtWidgets.QCheckBox("interpolate (display only)")
+        self.fill_box.toggled.connect(self.redraw)
+        self.aspect_box = QtWidgets.QCheckBox("true aspect (volts)")
+        self.aspect_box.setChecked(True)
+        self.aspect_box.toggled.connect(self.redraw)
         form.addRow("Colormap", self.cmap_box)
         form.addRow("Levels", self.auto_levels)
         form.addRow("Min", self.lo_spin)
         form.addRow("Max", self.hi_spin)
         form.addRow("Show", self.img_sel)
+        form.addRow("Empty pixels", self.fill_box)
+        form.addRow("Pixel shape", self.aspect_box)
         dock = QtWidgets.QDockWidget("Display", self)
         dock.setWidget(w)
         self.addDockWidget(QtCore.Qt.LeftDockWidgetArea, dock)
@@ -456,7 +526,8 @@ class Viewer(QtWidgets.QMainWindow):
         try:
             self.client = Client(host, port,
                                  on_frame=self.bridge.push_frame,
-                                 on_status=self.bridge.status.emit,
+                                 on_status=lambda st: self.bridge.status.emit(
+                                     dict(st, _rx=time.monotonic())),   # arrival time, see on_status
                                  on_error=lambda e: self.bridge.error.emit(str(e)))
             self.client.command("ping")
         except Exception as exc:
@@ -512,6 +583,11 @@ class Viewer(QtWidgets.QMainWindow):
                 ed.setValue(float(val))
             ed.blockSignals(False)
         actual = [f"{k} = {v}" for k, v in cfg.items() if k.endswith("_actual")]
+        sq = square_fast_freq(cfg)
+        if sq:
+            f, n = sq
+            cap = " (above the 1080-row cap)" if n > 1080 else ""
+            actual.append(f"square auto image: fast.freq ≈ {f:.1f} Hz → about {n:.0f} × {n:.0f}{cap}")
         self.actual_label.setText("\n".join(actual))
         self.roi = parse_roi(cfg.get("img.roi", roi_text(DEFAULT_ROI)))
         for sp, v in zip(self.roi_spins, self.roi):
@@ -540,7 +616,10 @@ class Viewer(QtWidgets.QMainWindow):
         self.bridge.reset_stats()
         self.reported = {}
         self.server_dropped = None
+        self.fast_cal = None
+        self.fast_sweep_v = None
         if self.send("start") is not None:
+            self.start_t = time.monotonic()        # status that arrived before this is from the old run
             self.server_state = "running"
 
     def stop_scan(self):
@@ -557,11 +636,20 @@ class Viewer(QtWidgets.QMainWindow):
         c = self.server_cfg
         return tuple(float(c.get(k, 0)) for k in ("slow.amp", "slow.offset", "fast.amp", "fast.offset"))
 
+    def _external(self):
+        return self.server_cfg.get("fast.source") == "external"
+
+    def _fast_text(self, y0, y1):
+        if self._external():               # no commanded range: fractions of the measured sweep
+            return f"fast {y0:.3f} … {y1:.3f} of the external sweep"
+        _, _, fa, fo = self._scan()
+        return f"fast {fo + fa * (2 * y0 - 1):+.4f} … {fo + fa * (2 * y1 - 1):+.4f} V"
+
     def _update_roi_volts(self):
         sa, so, fa, fo = self._scan()
         x0, x1, y0, y1 = self.roi
         self.roi_volts.setText(f"slow {so + sa * (2 * x0 - 1):+.4f} … {so + sa * (2 * x1 - 1):+.4f} V   "
-                               f"fast {fo + fa * (2 * y0 - 1):+.4f} … {fo + fa * (2 * y1 - 1):+.4f} V")
+                               + self._fast_text(y0, y1))
 
     def _selection_fractions(self):
         """Selected rectangle as (x0, x1, y0, y1) fractions of the full scan range, or None."""
@@ -585,7 +673,7 @@ class Viewer(QtWidgets.QMainWindow):
             sa, so, fa, fo = self._scan()
             self.log_msg(f"selection: slow {sel[0]:.4f}–{sel[1]:.4f}, fast {sel[2]:.4f}–{sel[3]:.4f} "
                          f"(slow {so + sa * (2 * sel[0] - 1):+.4f}…{so + sa * (2 * sel[1] - 1):+.4f} V, "
-                         f"fast {fo + fa * (2 * sel[2] - 1):+.4f}…{fo + fa * (2 * sel[3] - 1):+.4f} V)")
+                         f"{self._fast_text(sel[2], sel[3])})")
 
     def set_roi(self, roi):
         if self.send(f"set img.roi {roi_text(roi)}") is not None:
@@ -628,6 +716,12 @@ class Viewer(QtWidgets.QMainWindow):
             return full / 2, start + full / 2
 
         nsa, nso = new_axis(sa, so, x0, x1, d[0], d[1])
+        if self._external():
+            # the external generator sets the fast sweep: zoom the slow scan, crop the fast axis
+            self.log_msg(f"zoom: slow {nso:+.4f}±{nsa:.4f} V; fast cropped to {y0:.3f}–{y1:.3f} "
+                         "(external drive: fewer samples per pixel, not a finer scan)")
+            self._apply_scan(nsa, nso, fa, fo, (d[0], d[1], y0, y1))
+            return
         nfa, nfo = new_axis(fa, fo, y0, y1, d[2], d[3])
         self.log_msg(f"zoom: slow {nso:+.4f}±{nsa:.4f} V, fast {nfo:+.4f}±{nfa:.4f} V")
         self._apply_scan(nsa, nso, nfa, nfo, DEFAULT_ROI)
@@ -648,6 +742,27 @@ class Viewer(QtWidgets.QMainWindow):
 
     def on_status(self, st):
         self.server_state = st.get("state", self.server_state)
+        fc = st.get("fast_cal") if st.get("_rx", 0.0) >= getattr(self, "start_t", 0.0) else None
+        if fc in ("done", "failed") and fc != getattr(self, "fast_cal", None):
+            if fc == "done":
+                sweep = f"IN2 {float(st['in2_mid_v']):+.4f} ± {float(st['in2_amp_v']):.4f} V"
+                if st.get("fast_source") == "external":      # no commanded range to calibrate to
+                    what = f"external drive {float(st['fast_hz']):.3f} Hz, {sweep}"
+                else:
+                    what = (f"{sweep} -> cal.fast_gain {float(st['fast_cal_gain']):.4g}, "
+                            f"cal.fast_offset {float(st['fast_cal_offset']):+.4g} V")
+                self.log_msg(f"fast auto-cal: {what}; {float(st['fast_levels']):.0f} sensor steps, "
+                             f"width {st['img_width_run']}")
+            else:
+                then = ("no frames until a sweep is found, retrying" if st.get("fast_source") == "external"
+                        else "using the manual gains")
+                self.log_msg(f"fast auto-cal FAILED: IN2 sweep only {float(st['in2_amp_v']):.4f} V "
+                             f"(no fast signal on IN2?); {then}")
+        if fc is not None:
+            self.fast_cal = fc
+            # measured fast mirror sweep (IN2 = encoder), galvo-side volts like the slow amplitude
+            self.fast_sweep_v = (2 * float(st["in2_amp_v"]) * float(self.server_cfg.get("hw.sensor_gain", 1))
+                                 if fc == "done" else None)
         if "frames_dropped" in st:
             n = int(st["frames_dropped"])
             if self.server_dropped is not None and n > self.server_dropped:
@@ -705,20 +820,41 @@ class Viewer(QtWidgets.QMainWindow):
         self.status_frame.setText(
             f"frame {f.frame_id} | {f.width}×{f.height}×{f.n_images} {fmt} "
             f"{f.nbytes / 1e6:.2f} MB | {fps:.1f} fps | "
-            f"empty {100 * f.n_empty / max(npix, 1):.1f} % | records {f.n_records}{lost}")
+            f"empty {100 * f.n_empty / max(npix, 1):.1f} % | records {f.n_records}{lost}"
+            + (" | pixel {:.3g} × {:.3g} mV".format(*(1e3 * v for v in px)) if (px := self.pixel_size(f)) else ""))
         self.redraw()
+
+    def pixel_size(self, f):
+        """(fast, slow) extent of one pixel of frame f in galvo-side volts, or None.
+
+        Slow: the commanded sweep (2 * slow.amp; the slow mirror follows OUT1). Fast: the sweep
+        measured on IN2 by the start-up fit (the encoder), else the commanded 2 * fast.amp.
+        """
+        c = self.server_cfg
+        try:
+            slow = 2 * float(c["slow.amp"])
+            fast = getattr(self, "fast_sweep_v", None)
+            if fast is None and not self._external():
+                fast = 2 * float(c["fast.amp"])
+        except (KeyError, ValueError):
+            return None
+        if not fast or not slow:
+            return None
+        x0, x1, y0, y1 = f.roi
+        return fast * (y1 - y0) / f.width, slow * (x1 - x0) / f.height
 
     def _select(self):
         f = self.frame
         sel = self.img_sel.currentIndex()
+        data = [fill_empty(d) for d in f.data] if self.fill_box.isChecked() else f.data
         if f.n_images < 2 or sel == 0:
-            return f.data[0]
+            return data[0]
         if sel == 1:
-            return f.data[1]
+            return data[1]
         if sel == 2:
             gap = np.full((f.height, max(2, f.width // 50)), np.nan, np.float32)
-            return np.hstack([f.data[0], gap, f.data[1]])
-        return f.data[0] - f.data[1]
+            return np.hstack([data[0], gap, data[1]])
+        return data[0] - data[1]
 
     def redraw(self):
         if self.frame is None:
@@ -742,6 +878,8 @@ class Viewer(QtWidgets.QMainWindow):
         rgb = np.ascontiguousarray(rgb)
         h, w = img.shape
         qimg = QtGui.QImage(rgb.data, w, h, 3 * w, QtGui.QImage.Format_RGB888).copy()
+        px = self.pixel_size(self.frame) if self.aspect_box.isChecked() else None
+        self.view.set_aspect(px[1] / px[0] if px else 1.0)    # pixel drawn as tall as it is in volts
         self.view.set_image(qimg)
 
     def set_cmap(self, name):

@@ -34,6 +34,14 @@ static double gen_at(const int16_t *w, uint32_t len, uint32_t dec, double t)
     return w[i % len] * (1.0 - fr) + w[(i + 1) % len] * fr;
 }
 
+/* Fast mirror position at FPGA cycle t: OUT2 table, or the external generator. */
+static double fast_at(const sim_cfg_t *c, double t)
+{
+    if (c->ext_amp > 0.0)
+        return c->ext_offset + c->ext_amp * sin(2.0 * M_PI * c->ext_freq * t / FPGA_CLK_HZ);
+    return gen_at(c->wfm2, c->len2, c->dec2, t - c->fast_lag_cycles);
+}
+
 static int16_t gen_held(const int16_t *w, uint32_t len, uint32_t dec, uint64_t t)
 {
     return w[(t / dec) % len];
@@ -48,13 +56,13 @@ void sim_next(sim_t *s, record_t *out, size_t n)
 
         /* recorded values at the trig cycle */
         int16_t x_cmd = gen_held(c->wfm1, c->len1, c->dec1, t);
-        double  mirror = gen_at(c->wfm2, c->len2, c->dec2, t - c->fast_lag_cycles);
+        double  mirror = fast_at(c, t);
         double  sensor = (mirror - c->sensor_offset) / c->sensor_gain + c->noise * rnd_gauss(&s->rng);
 
         /* integral over the previous acq_dec-1 cycles, midpoint rule on the true positions */
         double tm = t - c->acq_dec / 2.0;
         double xm = gen_at(c->wfm1, c->len1, c->dec1, tm);
-        double ym = gen_at(c->wfm2, c->len2, c->dec2, tm - c->fast_lag_cycles);
+        double ym = fast_at(c, tm);
         double u = (xm - c->x_lo) / (c->x_hi - c->x_lo);
         double w = (ym - c->y_lo) / (c->y_hi - c->y_lo);
         double level = c->pattern(u, w);
