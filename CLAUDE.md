@@ -2,7 +2,7 @@
 
 The workspace rules in `Work/CLAUDE.md` apply here too: ask when unsure, don't change existing code
 without approval, commit only when asked, and get approval before editing any CLAUDE.md. This file
-adds project-specific context. Last updated 2026-10-27.
+adds project-specific context. Last updated 2026-10-29.
 
 ## What this is
 A galvo-mirror scanner on a **Red Pitaya STEMlab 125-14** (Zynq-7010). Two galvos scan a sample; a
@@ -10,6 +10,8 @@ scalar detector (photodiode/SiPM) is acquired synchronously with the galvo posit
 reconstructed on the Red Pitaya and only images are sent over TCP** to a PC viewer.
 
 - Repo: private **`HorvatMa/RedPitaya_scan`** (SSH remote, branch `main`), fresh history from 2026-10-27.
+  GitHub reports the repo moved to `git@github.com:HorvatMa/RedPitaya_scan.git` (pushes still work via redirect;
+  update the remote URL).
   - The old repo's `.git` is kept locally as `.git-old-RedPitaya_SiPM/` (gitignored; old remote
     `martinhorvat/RedPitaya_SiPM`). Don't delete it.
   - Vivado build outputs are gitignored (`*.runs/ *.cache/ *.gen/ *.sim/ *.ip_user_files/`).
@@ -91,6 +93,11 @@ reachable from there, so only build and commit; deploy from the Fedora PC.
    bitstream, then writes `fpga/rp_top.bit` and `fpga/reports/{timing_summary,utilization}.rpt` and prints
    `BUILD DONE: ... WNS=... WHS=...`. On failure read `vivado/myproj/project_1.runs/{synth_1,impl_1}/runme.log`
    (and the `system_*_synth_1` OOC runs); don't "fix" errors by editing HDL without Martin's OK.
+   - On a fresh clone the first build fails with `module 'system_wrapper' not found`: the wrapper lives in the
+     gitignored `project_1.gen/`, so Vivado auto-disables it on open. Re-enable it
+     (`set_property is_enabled true [get_files -all *system_wrapper.v]`) and rebuild; `build_fpga.tcl` doesn't do this yet.
+   - The build rewrites `project_1.xpr`, `system.bd`/`.bda` and the `.xci` files and creates `NA/`: don't commit those.
+   - The `upgrade_ip ... sdsoc_pfm.tcl` error in the console is harmless.
 4. Check: WNS ≥ 0 and WHS ≥ 0 (before the fix: WNS −4.45 ns, 180 failing endpoints, worst `start_gen` → FIFO/DAC).
    If it still fails, list the failing path groups from `timing_summary.rpt` and propose fixes (FPGA_MANUAL §10).
    Also check for new critical warnings in `runme.log` (the old XDC false-path warnings 12-4739 are known).
@@ -107,9 +114,9 @@ reachable from there, so only build and commit; deploy from the Fedora PC.
   Waveforms are written as full 32-bit words only (narrower writes are silently ignored).
 - `DEC_FACTOR ≥ 2` (0 makes acquisition impossible to stop), `FIFO_MIN_THRESH` stays 15.
 - Deployed bitstream: the DMA buffer `0x1900_0000` is **not reserved** in Linux (ordinary RAM); the first server2 hardware
-  run (2026-10-29) hung the kernel. Branch `fpga-dma-buffer-fix` moves it to `0x0A00_0000` (reserved `labuf`). Until
-  that is built and deployed: keep hardware runs short and
-  reboot afterwards until this is fixed.
+  run (2026-10-29) hung the kernel. Branch `fpga-dma-buffer-fix` moves it to `0x0A00_0000` (reserved `labuf`). That bitstream
+  is built and committed (`4489877`, 2026-10-29) but **not deployed yet**. Until it is deployed: keep hardware runs
+  short and reboot afterwards.
 
 ## Decisions (Martin, 2026-10-27)
 - Reconstruct on the RP, send only images; complete clean C rewrite (`server2/`; the old `server/` stays).
@@ -126,13 +133,17 @@ reachable from there, so only build and commit; deploy from the Fedora PC.
 OUT1 = slow galvo, OUT2 = fast galvo, IN1 = detector (deployed: integrated as 16383 − raw; branch `fpga-dma-buffer-fix`: signed, 0 V = 0), IN2 = fast-galvo
 position sensor (`(8192 − raw) << 2`). The ADC number format and polarity are unverified.
 
-## Status and next steps (2026-10-27)
+## Status and next steps (2026-10-29)
 - Done:
   - FPGA analysis and docs;
   - server2 complete with the fake backend; all tests pass on the PC and on the board;
   - `hw_uio.c` written; it builds on the board and refuses to run without the overlay;
-  - the viewer works against the C server.
-- **Next: electrical loopback test** (`server2/tests/hw_loopback.py`), steps in the project hub.
+  - the viewer works against the C server;
+  - 2026-10-29: `fpga-dma-buffer-fix` bitstream built on Windows (Vivado 2020.2), timing met
+    (WNS +0.352 ns, WHS +0.067 ns), committed as `fpga/rp_top.bit` + `fpga/reports/` (`4489877`).
+- **Next: deploy that bitstream from Fedora** ("FPGA build on Windows" step 6: Martin's OK, galvos disconnected),
+  check map1 = `0x0a000000`, rebuild server2 on the board.
+- **Then: electrical loopback test** (`server2/tests/hw_loopback.py`), steps in the project hub.
   Galvos disconnected; OUT1 → IN1; signal generator (sine ~500 Hz, ±0.4 V, High-Z) or OUT2 → IN2.
   Expected: a vertical gradient. The fit of pixel vs OUT1 voltage gives the IN1 polarity, scale and
   ADC linearity. Needs Martin's go and an applied overlay; reboot afterwards.
@@ -142,7 +153,7 @@ position sensor (`(8192 − raw) << 2`). The ADC number format and polarity are 
     Options: sine fit to the sensor (recommended), more IN2 gain, or the commanded position;
   - the meaning of the gains 10.75 / 20; the cabling.
 - FPGA issues known but not fixed (need a Vivado rebuild):
-  - timing not met (WNS −4.45 ns); source fix on branch `fpga-dma-buffer-fix`, not yet built;
+  - ~~timing not met (WNS −4.45 ns)~~ fixed and met in the `fpga-dma-buffer-fix` build (not deployed yet);
   - WLAST depends on WREADY;
   - `DEC_FACTOR = 0` makes acquisition impossible to stop;
   - 16/17-bit address alias;
