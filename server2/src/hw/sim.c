@@ -63,6 +63,6 @@ void sim_next(sim_t *s, record_t *out, size_t n)
         if (c->sensor_lsb > 1)
             sensor = c->sensor_lsb * floor(sensor / c->sensor_lsb + 0.5);
         out[j].y = (int16_t)lround(fmax(-32768.0, fmin(32767.0, sensor)));
-        out[j].v = (uint32_t)lround(level * (c->acq_dec - 1));
+        out[j].v = (int32_t)lround(level * (c->acq_dec - 1));
     }
 }

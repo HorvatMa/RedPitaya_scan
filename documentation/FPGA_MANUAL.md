@@ -7,6 +7,15 @@ overlay, C server and Python client. **Nothing here was tested on hardware.** St
 
 Board: Red Pitaya STEMlab 125-14 (Zynq-7010, `xc7z010clg400-1`). Vivado 2020.2.
 
+
+> **Branch `fpga-dma-buffer-fix` (2026-10-29), not yet built/deployed.** Source changes vs. the deployed bitstream:
+> 1. DMA buffer moved `0x1900_0000` → **`0x0A00_0000`** (`axi_s2mm.sv` parameter `BUFFER_BASE`, `fpga.dtso`). It lies in the stock
+>    boot DT's reserved `labuf@a000000` (32 MiB), so Linux never allocates it; no boot-file change.
+> 2. Timing: `generate_top` registers `start_gen` locally and registers `dac_val_1/2` (+1 cycle latency on OUT1/OUT2 and on x).
+> 3. Integrator: IN1 is integrated as a **signed sample, 0 V = 0** (`{r[13], ~r[12:0]}`, the official RP conversion),
+>    no `16383 − r` offset. The server's `record_t.v` is now `int32_t`.
+> Build: `scripts/build_fpga.tcl` (Vivado 2020.2). Sections below describe the deployed design unless marked.
+
 ---
 
 ## 0. TL;DR
@@ -36,7 +45,7 @@ Board: Red Pitaya STEMlab 125-14 (Zynq-7010, `xc7z010clg400-1`). Vivado 2020.2.
   - Waveform 2 holds at most **12288** samples. Samples 12288 and up alias onto the control
     registers.
   - Setting `DEC_FACTOR = 0` makes acquisition impossible to stop.
-  - Timing is not met (WNS −4.45 ns).
+  - Timing is not met (WNS −4.45 ns). Fix on branch `fpga-dma-buffer-fix` (§10), not yet built.
   - Only full 32-bit writes are accepted. Narrower writes are silently ignored.
 
 ---
@@ -145,7 +154,10 @@ Address map (PS view):
 ### ADC (IN1 = `adc_dat_i[0]`, IN2 = `adc_dat_i[1]`)
 * `rp_top` takes bits `[15:2]` (14 bits), registers them twice on `clk_125`, and passes them on
   **without format conversion** (`{r[13], r[12:0]}` is the identity).
-* **IN1 → integrator:** uses `x = 16383 − r` (14-bit, as unsigned 0..16383).
+* **IN1 → integrator:** uses `x = 16383 − r` (14-bit, as unsigned 0..16383). Branch `fpga-dma-buffer-fix`: `x = {r[13], ~r[12:0]}`
+  as signed (0 V = 0), which equals the old value − 8192. The official RP FPGA uses the same conversion
+  (`RedPitaya-FPGA/prj/logic/rtl/red_pitaya_top.sv`: `{adc[15], ~adc[14:2]}`), so the raw word is offset binary
+  and both maps are linear (no wrap at 0 V).
 * **IN2 → input_selector:** `y = {(8192 − r) mod 2^14, 2'b00}`, i.e. scaled to 16 bits, as int16.
 * The code was written so that these maps give "more signal = larger number". Whether the raw ADC word
   is offset-binary or two's complement (and so whether these maps are linear across the full range)
@@ -472,6 +484,11 @@ Fresh boot, no overlay applied at the time. Copy of the live tree: run `dtc -I f
 3. Reuse an already-reserved region (`labuf@a000000`). This also needs an FPGA rebuild, and it collides
    with RP's logic analyser.
 
+**Chosen 2026-10-29 (Martin): option 3, buffer at `0x0A00_0000`** (branch `fpga-dma-buffer-fix`). The reservation is
+explicit in the base DT, so it holds even if the memory size changes; the RP logic analyser can't run with our
+bitstream anyway. Note: on 2026-10-29 the first hardware scan with server2 hung the kernel (5 s watchdog reset)
+within seconds; DMA into unreserved RAM at `0x1900_0000` is the prime suspect.
+
 ### 8.5 To read the live tree on the board
 ```sh
 ls /sys/firmware/devicetree/base/ | head; ls /sys/firmware/devicetree/base/__symbols__ | grep -E 'amba_pl|intc'
@@ -529,6 +546,10 @@ From `vivado/myproj/project_1.runs/impl_1/`:
     `dac_val_*` (and/or `data_in`) before the FIFO, or replicate/pipeline `start_gen`.
   - `clk_125 → pll_dac_clk_1x`: −2.68 ns on `dac_dat_a_o_reg[*]` in `rp_top`. Fix: generate the DAC data
     in the PLL domain, or drive the custom logic from `rp_pll` clocks, as in the stock RP design.
+  - **Branch `fpga-dma-buffer-fix`:** `generate_top` now registers `start_gen` (`start_gen_r`) and `dac_val_*`, which
+    splits both failing groups into short register-to-register paths. Re-check all endpoints after the build
+    (`fpga/reports/timing_summary.rpt`, 100 paths). If `clk_125 → pll_dac_clk_1x` still fails, drive the DAC
+    registers from the same MMCM.
   - The board apparently works anyway. Expect occasional corrupt samples or DAC glitches, and do not
     treat this as a safe margin (temperature/board dependent).
 * Many `set_false_path` constraints in the XDC refer to clocks that don't exist in this design
@@ -594,7 +615,7 @@ for channel 2 and inverted compares. `waveform_border = 160000` exceeds the 14-b
 * **Change the record format:** `axi_control.data_in` (64 bit). The FIFO IP width, the burst `awsize`,
   `addr_shift` (+128 = 16 × 8 B), `buffer_n` units, the server (`len = buff_n*8`) and the client
   `record_dtype` all depend on it.
-* **Change the DMA buffer:** `axi_s2mm.sv` hard-codes `32'h1900_0000`. Keep it consistent with
+* **Change the DMA buffer:** `axi_s2mm.sv` hard-codes `32'h1900_0000` (branch `fpga-dma-buffer-fix`: parameter `BUFFER_BASE` = `0x0A00_0000`). Keep it consistent with
   `fpga.dtso` (`rp_acquire` map 1) and make sure the region is reserved in Linux.
 * **After any change:** re-run implementation, check `rp_top_timing_summary_routed.rpt`, copy
   `impl_1/rp_top.bit` to `fpga/`, and rebuild the dtbo if addresses changed.

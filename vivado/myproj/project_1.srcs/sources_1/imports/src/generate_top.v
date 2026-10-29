@@ -20,8 +20,8 @@ module generate_top #(
     
     input wire  [DATA_WIDTH_OUT-1:0]    waveform_val_1,
     input wire  [DATA_WIDTH_OUT-1:0]    waveform_val_2,
-    output wire [DATA_WIDTH_OUT-1:0]    dac_val_1,
-    output wire [DATA_WIDTH_OUT-1:0]    dac_val_2,
+    output reg  [DATA_WIDTH_OUT-1:0]    dac_val_1,
+    output reg  [DATA_WIDTH_OUT-1:0]    dac_val_2,
     
     input wire                          bram_dout_valid
 );
@@ -34,11 +34,17 @@ module generate_top #(
     assign advance_1 = decimation_count_1 >= decimation_1;
     assign advance_2 = decimation_count_2 >= decimation_2;
     
-    assign dac_val_1 = start_gen ? waveform_val_1 : 0;
-    assign dac_val_2 = start_gen ? waveform_val_2 : 0;
+    // Local copy of start_gen and registered outputs: start_gen used to fan out across the chip
+    // straight into the record FIFO and the DAC registers (WNS -4.45 ns). Adds one cycle of latency.
+    reg start_gen_r;
+    always @ (posedge clk) begin
+        start_gen_r <= rst_n & start_gen;
+        dac_val_1 <= start_gen_r ? waveform_val_1 : 0;
+        dac_val_2 <= start_gen_r ? waveform_val_2 : 0;
+    end
     
     always @ (posedge clk) begin
-        if (~rst_n || ~start_gen) 
+        if (~rst_n || ~start_gen_r) 
             decimation_count_1 <= 0;
         else if (advance_1)
             decimation_count_1 <= 1;
@@ -47,7 +53,7 @@ module generate_top #(
     end
     
     always @ (posedge clk) begin
-        if (~rst_n || ~start_gen) 
+        if (~rst_n || ~start_gen_r) 
             decimation_count_2 <= 0;
         else if (advance_2)
             decimation_count_2 <= 1;
@@ -56,14 +62,14 @@ module generate_top #(
     end
     
     always @ (posedge clk) begin
-        if (~rst_n || ~start_gen || ((bram_read_addr_1 == waveform_len_1-1) && advance_1)) 
+        if (~rst_n || ~start_gen_r || ((bram_read_addr_1 == waveform_len_1-1) && advance_1)) 
             bram_read_addr_1 <= 0;
         else if (advance_1)
             bram_read_addr_1 <= bram_read_addr_1 + 1;
     end
     
     always @ (posedge clk) begin
-        if (~rst_n || ~start_gen || ((bram_read_addr_2 == waveform_len_2-1) && advance_2)) 
+        if (~rst_n || ~start_gen_r || ((bram_read_addr_2 == waveform_len_2-1) && advance_2)) 
             bram_read_addr_2 <= 0;
         else if (advance_2)
             bram_read_addr_2 <= bram_read_addr_2 + 1;

@@ -22,7 +22,10 @@
 
 module axi_s2mm#
    (parameter M_AXI_CNT_ADDR_BITS   = 32,
-    parameter M_AXI_CNT_DATA_BITS   = 64)
+    parameter M_AXI_CNT_DATA_BITS   = 64,
+    // DMA buffer (512 KiB). 0x0A00_0000 lies in the stock RP boot DT's reserved "labuf" region
+    // (32 MB, kernel never allocates it). Was 0x1900_0000 = ordinary Linux RAM. Must match fpga.dtso.
+    parameter BUFFER_BASE           = 32'h0A000000)
    (input  wire                                   m_axi_aclk,    
     input  wire                                   m_axi_aresetn,     
     output wire [(M_AXI_CNT_ADDR_BITS-1):0]       m_axi_awaddr,     
@@ -67,7 +70,7 @@ module axi_s2mm#
     assign m_axi_awprot = 3'b000;
     assign m_axi_awcache = 4'b0011;
     assign m_axi_wstrb = 8'b11111111;
-    assign m_axi_awaddr = 32'h19000000 + addr_shift;
+    assign m_axi_awaddr = BUFFER_BASE + addr_shift;
     
     assign m_axi_awvalid = awvalid;
     assign m_axi_wvalid = wvalid;

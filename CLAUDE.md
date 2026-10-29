@@ -30,7 +30,8 @@ reconstructed on the Red Pitaya and only images are sent over TCP** to a PC view
   `vivado/myproj/project_1.runs/impl_1/rp_top.bit` == `fpga/rp_top.bit` == `/home/redpitaya/fpga/fpga.bit` on the board.
   - `fpga/project/` is an older, incompatible design (Feb 2025). `vivado/sources_1`, `vivado/src` and
     `vivado/system.tcl` are a stale intermediate snapshot. **Don't edit these thinking you change the hardware.**
-  - Vivado is **not installed** on this PC.
+  - Vivado is **not installed** on the Fedora PC. Martin builds on a **Windows machine with Vivado 2020.2**:
+    see "FPGA build on Windows" below.
 - `fpga/dts/fpga.dtso`: the overlay with UIO nodes `rp_acquire` and `rp_generate`. `scripts/apply_overlay.sh`
   loads the bitstream through `/dev/xdevcfg`, then the dtbo.
 - `server/`: old C server (reference only; don't modify).
@@ -75,13 +76,39 @@ Python: `~/.venv/base` (PyQt5, numpy, matplotlib). On the board: gcc 9.4, Python
 - **Loading the bitstream or starting a scan drives OUT1/OUT2: make sure the galvos are disconnected or
   safe, and ask Martin first.**
 
+## FPGA build on Windows (for Claude running there)
+Martin's Windows machine has **Vivado 2020.2** (exactly this version: the project, block design and IP are 2020.2;
+another version would upgrade or lock the IP, so stop and ask if the version differs). The board may not be
+reachable from there, so only build and commit; deploy from the Fedora PC.
+1. Check the tools: `where vivado` (cmd/PowerShell) or the default `C:\Xilinx\Vivado\2020.2\bin\vivado.bat`.
+   `vivado -version` must say v2020.2. If `vivado` is not on PATH, call the `.bat` by its full path
+   (from Git Bash: `cmd //c "C:\Xilinx\Vivado\2020.2\bin\vivado.bat -version"`).
+2. In the repo clone (ask Martin where it is): `git status` clean → `git fetch` → `git switch fpga-dma-buffer-fix` → `git pull`.
+   The HDL files under `vivado/myproj/project_1.srcs/` use **CRLF** line endings: keep them (no autocrlf conversion, no reformatting).
+3. Build from the repo root (takes ~10–30 min; run it in the background):
+   `vivado -mode batch -nojournal -nolog -source scripts/build_fpga.tcl -tclargs 8`
+   The script refreshes the module references, regenerates the block design, runs synthesis + implementation +
+   bitstream, then writes `fpga/rp_top.bit` and `fpga/reports/{timing_summary,utilization}.rpt` and prints
+   `BUILD DONE: ... WNS=... WHS=...`. On failure read `vivado/myproj/project_1.runs/{synth_1,impl_1}/runme.log`
+   (and the `system_*_synth_1` OOC runs); don't "fix" errors by editing HDL without Martin's OK.
+4. Check: WNS ≥ 0 and WHS ≥ 0 (before the fix: WNS −4.45 ns, 180 failing endpoints, worst `start_gen` → FIFO/DAC).
+   If it still fails, list the failing path groups from `timing_summary.rpt` and propose fixes (FPGA_MANUAL §10).
+   Also check for new critical warnings in `runme.log` (the old XDC false-path warnings 12-4739 are known).
+5. Report to Martin; commit `fpga/rp_top.bit` + `fpga/reports/` and push **only when asked**. `*.runs/`, `*.gen/` etc. stay ignored.
+6. Deploy (from Fedora, needs Martin's OK, galvos disconnected, ideally the serial console connected): back up the board's
+   `/home/redpitaya/fpga/fpga.bit` and `fpga.dtbo`, copy the new `rp_top.bit` → `fpga/fpga.bit` and `fpga/dts/fpga.dtso`,
+   build the dtbo on the board (`dtc -@ -O dtb -o fpga.dtbo fpga.dtso`), then `./apply_overlay.sh rp` and check
+   `cat /sys/class/uio/uio*/maps/map1/addr` shows `0x0a000000`. Rebuild server2 on the board (`record_t.v` is now signed).
+
 ## Hardware rules (enforced in `hw_uio.c`; never bypass)
 - `CTRL` (0x20) is only ever written as **3**. Writing 0/1 disables the interrupt request and the DMA
   runs past its 512 KiB buffer into Linux RAM.
 - Waveform 2 holds **≤ 12288 samples**; longer tables alias onto the control registers.
   Waveforms are written as full 32-bit words only (narrower writes are silently ignored).
 - `DEC_FACTOR ≥ 2` (0 makes acquisition impossible to stop), `FIFO_MIN_THRESH` stays 15.
-- The DMA buffer `0x1900_0000` is **not reserved** in Linux (ordinary RAM): keep hardware runs short and
+- Deployed bitstream: the DMA buffer `0x1900_0000` is **not reserved** in Linux (ordinary RAM); the first server2 hardware
+  run (2026-10-29) hung the kernel. Branch `fpga-dma-buffer-fix` moves it to `0x0A00_0000` (reserved `labuf`). Until
+  that is built and deployed: keep hardware runs short and
   reboot afterwards until this is fixed.
 
 ## Decisions (Martin, 2026-10-27)
@@ -96,7 +123,7 @@ Python: `~/.venv/base` (PyQt5, numpy, matplotlib). On the board: gcc 9.4, Python
   on a slow link.
 
 ## Assumed wiring (from the code; README says otherwise — confirm with Martin)
-OUT1 = slow galvo, OUT2 = fast galvo, IN1 = detector (integrated as 16383 − raw), IN2 = fast-galvo
+OUT1 = slow galvo, OUT2 = fast galvo, IN1 = detector (deployed: integrated as 16383 − raw; branch `fpga-dma-buffer-fix`: signed, 0 V = 0), IN2 = fast-galvo
 position sensor (`(8192 − raw) << 2`). The ADC number format and polarity are unverified.
 
 ## Status and next steps (2026-10-27)
@@ -110,13 +137,12 @@ position sensor (`(8192 − raw) << 2`). The ADC number format and polarity are 
   Expected: a vertical gradient. The fit of pixel vs OUT1 voltage gives the IN1 polarity, scale and
   ADC linearity. Needs Martin's go and an applied overlay; reboot afterwards.
 - Open decisions:
-  - the DMA buffer fix (boot-DT reservation without `no-map`, or move the buffer to `0x1E00_0000`,
-    which needs an FPGA rebuild);
+  - ~~the DMA buffer fix~~ decided 2026-10-29: `0x0A00_0000` (inside the reserved `labuf`), branch `fpga-dma-buffer-fix`;
   - the **fast-axis resolution**: the 14-bit sensor gives only ~94 levels at the default scan.
     Options: sine fit to the sensor (recommended), more IN2 gain, or the commanded position;
   - the meaning of the gains 10.75 / 20; the cabling.
 - FPGA issues known but not fixed (need a Vivado rebuild):
-  - timing not met (WNS −4.45 ns);
+  - timing not met (WNS −4.45 ns); source fix on branch `fpga-dma-buffer-fix`, not yet built;
   - WLAST depends on WREADY;
   - `DEC_FACTOR = 0` makes acquisition impossible to stop;
   - 16/17-bit address alias;

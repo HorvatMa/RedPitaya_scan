@@ -50,6 +50,11 @@ Legend: **(M)** = needs Martin / hardware, otherwise Claude. Ask before modifyin
 - 2026-10-27: Boot-DT reservation attempt (no-map, 512 KiB at `0x1900_0000`) → the kernel didn't boot.
   Martin restored `devicetree.dtb.orig`. Suspected cause: no-map on a non-1/2 MiB-aligned region.
   Retry without no-map, using the serial console.
+- 2026-10-29: **First hardware loopback run (run 1, generator on IN2) crashed the board.** Overlay applied,
+  `rpsipm_server` (uio) started, config accepted (slow 3.000 Hz, fast 500 Hz, 763 × 162, 6291 sensor levels); after
+  `start` the server stopped answering and the board rebooted (5 s hardware watchdog). No persistent logs.
+  Prime suspect: DMA into unreserved RAM at `0x1900_0000`. Fix on branch `fpga-dma-buffer-fix` (buffer →
+  `0x0A00_0000`, timing, signed IN1), needs the Vivado build. Next attempt: serial console connected.
 
 ## Phase 0 — Prerequisites
 - [x] SSH access works (`root@rp-f0a360.local`, key auth, 2026-10-27).
@@ -59,7 +64,8 @@ Legend: **(M)** = needs Martin / hardware, otherwise Claude. Ask before modifyin
   - the deployed bitstream, dtbo and server on the board match the repo;
   - **the DMA buffer `0x1900_0000` is NOT reserved (it is ordinary Linux RAM).** `0x1E00_0000–0x1FFF_FFFF`
     is outside Linux.
-- [ ] **(M) Decide the DMA buffer fix** (FPGA_MANUAL §8.5a options):
+- [x] **(M) Decide the DMA buffer fix** → 2026-10-29: `0x0A00_0000` (inside the reserved `labuf`), branch
+  `fpga-dma-buffer-fix`, needs the Vivado build on Windows (`scripts/build_fpga.tcl`). Options were:
   1. move it to `0x1E00_0000` (needs Vivado 2020.2 for a rebuild; not on this PC);
   2. reserve `0x1900_0000` in the boot DT;
   3. reuse `labuf`.
@@ -175,7 +181,8 @@ Legend: **(M)** = needs Martin / hardware, otherwise Claude. Ask before modifyin
   - the burst-end handshake can be lost if the memory port stalls;
   - the 17/16-bit address aliasing;
   - the interrupt-threshold wrap-around.
-- [ ] Fix the timing violations (WNS −4.45 ns).
+- [ ] Fix the timing violations (WNS −4.45 ns). Source fix on branch `fpga-dma-buffer-fix` (registered `start_gen`/`dac_val`);
+      verify after the build.
 
 ## Phase 8 — PC client (minimal)
 - [ ] Python client:

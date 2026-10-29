@@ -41,14 +41,18 @@ module integrator_top#(
     reg                         [32-1:0]                  dec;
     wire        signed          [OUT_WIDTH-1:0]           signal_in_extended;
     
-    assign signal_in_extended = {18'b0, 14'd16383 - signal_in};
+    // IN1 as a signed sample, no offset: 0 V -> 0, positive input -> positive value. Same conversion
+    // as the official RP FPGA (red_pitaya_top.sv: {adc[15], ~adc[14:2]}). Was 16383 - signal_in (= this + 8192).
+    wire        signed          [ADC_WIDTH-1:0]           signal_in_signed;
+    assign signal_in_signed   = {signal_in[ADC_WIDTH-1], ~signal_in[ADC_WIDTH-2:0]};
+    assign signal_in_extended = {{(OUT_WIDTH-ADC_WIDTH){signal_in_signed[ADC_WIDTH-1]}}, signal_in_signed};
     
     wire                            activate;
     
     assign activate = dec >= integrator_dec;
     assign tmp = (signal_in_extended + signal_old) >>> 1;
     
-    assign integrated_signal_test = {18'b0, 14'd16383 - signal_in};
+    assign integrated_signal_test = signal_in_extended;
     
     always @ (posedge clk) begin
         if (~rst_n) begin

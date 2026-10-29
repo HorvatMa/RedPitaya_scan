@@ -68,7 +68,7 @@ gcc 5.x).
             finished frames                                    ▼
             ┌───────┴────────┐      SPSC ring of records  ┌──────────────┐
             │  recon thread  │ ◄───────────────────────── │  acq thread  │ ◄── IRQ 62 (/dev/uio)
-            │ map → bin →    │                            │ copy chunk,  │ ◄── DDR buffer 0x1900_0000
+            │ map → bin →    │                            │ copy chunk,  │ ◄── DDR buffer 0x0A00_0000
             │ frame boundary │                            │ ack CTRL=3   │
             └────────────────┘                            └──────────────┘
 ```
