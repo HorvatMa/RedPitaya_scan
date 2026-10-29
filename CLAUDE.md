@@ -9,9 +9,8 @@ A galvo-mirror scanner on a **Red Pitaya STEMlab 125-14** (Zynq-7010). Two galvo
 scalar detector (photodiode/SiPM) is acquired synchronously with the galvo positions. **Images are
 reconstructed on the Red Pitaya and only images are sent over TCP** to a PC viewer.
 
-- Repo: private **`HorvatMa/RedPitaya_scan`** (SSH remote, branch `main`), fresh history from 2026-10-27.
-  GitHub reports the repo moved to `git@github.com:HorvatMa/RedPitaya_scan.git` (pushes still work via redirect;
-  update the remote URL).
+- Repo: private **`HorvatMa/RedPitaya_scan`** (`git@github.com:HorvatMa/RedPitaya_scan.git`), fresh history from 2026-10-27.
+  Current work is on branch **`fpga-dma-buffer-fix`** (deployed on the board, not merged into `main` yet).
   - The old repo's `.git` is kept locally as `.git-old-RedPitaya_SiPM/` (gitignored; old remote
     `martinhorvat/RedPitaya_SiPM`). Don't delete it.
   - Vivado build outputs are gitignored (`*.runs/ *.cache/ *.gen/ *.sim/ *.ip_user_files/`).
@@ -39,15 +38,18 @@ reconstructed on the Red Pitaya and only images are sent over TCP** to a PC view
 - `server/`: old C server (reference only; don't modify).
 - **`server2/`: the new C server** (written 2026-10-27):
   - `src/recon/`: `scan.c` (waveforms, exact-frequency len/dec choice) and `recon.c` (delay pairing,
-    slow-turn frame splitting, fast direction, binning; float inner loop);
-  - `src/config.c`: all protocol keys, volts → counts, image geometry, auto size capped at the sensor levels;
+    slow-turn frame splitting, fast direction, binning; float inner loop; fast-axis start-up fit
+    `cal.fast_auto`; external fast drive `fast.source external` with frequency measurement);
+  - `src/config.c`: all protocol keys, volts → counts, image geometry, auto size (the sensor-step cap on the
+    width is applied by recon after the fit, so `img.width_actual` is an upper bound; 0 with external drive);
   - `src/app.c`: state machine, acquisition thread → SPSC ring (4 M records) → reconstruction thread
     → 3-slot frame pool that drops old frames;
   - `src/net/`: TCP server on port 5000, one client, STATUS every 1 s;
-  - `src/hw/`: `hw_fake.c` + `sim.c` (FPGA-faithful simulator, runs anywhere) and `hw_uio.c`
-    (the real FPGA via UIO).
+  - `src/hw/`: `hw_fake.c` + `sim.c` (FPGA-faithful simulator, runs anywhere; `RPSIPM_FAKE_EXT="Hz amp offset"`
+    simulates an external fast generator) and `hw_uio.c` (the real FPGA via UIO).
 - `client/viewer/`: PyQt5 viewer (`viewer.py`), protocol module `rpsipm/protocol.py`, `mock_server.py`
-  (`--throttle MBPS`), `test_viewer.py`.
+  (`--throttle MBPS`), `test_viewer.py`. Display options: interpolate empty pixels (display only), true pixel
+  aspect from volts, suggested fast frequency for a square auto image.
 - `client/src/`: the old Python client (`image_test_2.py` is the source of the default scan values and gains).
 
 ## Build / test
@@ -113,10 +115,13 @@ reachable from there, so only build and commit; deploy from the Fedora PC.
 - Waveform 2 holds **≤ 12288 samples**; longer tables alias onto the control registers.
   Waveforms are written as full 32-bit words only (narrower writes are silently ignored).
 - `DEC_FACTOR ≥ 2` (0 makes acquisition impossible to stop), `FIFO_MIN_THRESH` stays 15.
-- Deployed bitstream: the DMA buffer `0x1900_0000` is **not reserved** in Linux (ordinary RAM); the first server2 hardware
-  run (2026-10-29) hung the kernel. Branch `fpga-dma-buffer-fix` moves it to `0x0A00_0000` (reserved `labuf`). That bitstream
-  is built and committed (`4489877`, 2026-10-29) but **not deployed yet**. Until it is deployed: keep hardware runs
-  short and reboot afterwards.
+- Interrupt loop: re-enable the UIO interrupt **before** the clear, and hold the clear until ~4096 records have queued
+  since the interrupt (the FPGA sizes the next chunk to the backlog at clear time; clearing at once gives ~50-record
+  chunks, ~37k IRQ/s, and ~7 % data loss at 2.5 Mrec/s).
+- Deployed bitstream (since 2026-10-29): `fpga-dma-buffer-fix` build `4489877`, DMA buffer at `0x0A00_0000` inside the
+  reserved `labuf` (`0x0A00_0000`–`0x0BFF_FFFF`). The old `0x1900_0000` buffer was ordinary Linux RAM and hung the kernel.
+  Backup of the previous `fpga.bit`/`fpga.dtbo`/`fpga.dtso`: `/home/redpitaya/fpga/backup_2026-10-29/` on the board.
+  The overlay is not persistent: after a reboot run `cd /home/redpitaya && ./apply_overlay.sh rp` before the server.
 
 ## Decisions (Martin, 2026-10-27)
 - Reconstruct on the RP, send only images; complete clean C rewrite (`server2/`; the old `server/` stays).
@@ -128,33 +133,40 @@ reachable from there, so only build and commit; deploy from the Fedora PC.
   The viewer offers crop / zoom-scan / zoom-out / full field.
 - Frame ids are assigned at reconstruction and restart at 0 every run, so a gap means frames dropped
   on a slow link.
+- (2026-10-29) Fast axis: `cal.fast_auto` (default on) fits the IN2 sweep at start and maps it onto the commanded
+  range, because the amplified galvo doesn't follow OUT2 1:1. `fast.source external`: a generator drives the fast
+  galvo, OUT2 = 0 V, the frequency is measured from IN2; viewer zoom then only zooms the slow axis and crops the fast.
+- (2026-10-29) Working assumption: the slow mirror is exactly at the slow output voltage, and IN2 is exactly the fast
+  mirror position (encoder). Images keep their data-limited resolution; the viewer draws rectangular pixels so the
+  picture isn't stretched (pixel size in volts).
 
 ## Assumed wiring (from the code; README says otherwise — confirm with Martin)
-OUT1 = slow galvo, OUT2 = fast galvo, IN1 = detector (deployed: integrated as 16383 − raw; branch `fpga-dma-buffer-fix`: signed, 0 V = 0), IN2 = fast-galvo
-position sensor (`(8192 − raw) << 2`). The ADC number format and polarity are unverified.
+OUT1 = slow galvo, OUT2 = fast galvo (or unused with an external generator), IN1 = detector (integrated as a signed
+value, 0 V = 0), IN2 = fast-galvo position sensor (`(8192 − raw) << 2`). Loopback 2026-10-29: IN1 polarity positive,
+pixel = 7.3 + 7555·V (OUT1 volts), linear (residuals ±3 counts); IN2 read 0.354 V for a generator set to ±0.4 V.
+The absolute scales of OUT1/IN1/IN2 are still uncalibrated (±1 V ↔ ±32767 assumed).
 
 ## Status and next steps (2026-10-29)
 - Done:
-  - FPGA analysis and docs;
-  - server2 complete with the fake backend; all tests pass on the PC and on the board;
-  - `hw_uio.c` written; it builds on the board and refuses to run without the overlay;
-  - the viewer works against the C server;
-  - 2026-10-29: `fpga-dma-buffer-fix` bitstream built on Windows (Vivado 2020.2), timing met
-    (WNS +0.352 ns, WHS +0.067 ns), committed as `fpga/rp_top.bit` + `fpga/reports/` (`4489877`).
-- **Next: deploy that bitstream from Fedora** ("FPGA build on Windows" step 6: Martin's OK, galvos disconnected),
-  check map1 = `0x0a000000`, rebuild server2 on the board.
-- **Then: electrical loopback test** (`server2/tests/hw_loopback.py`), steps in the project hub.
-  Galvos disconnected; OUT1 → IN1; signal generator (sine ~500 Hz, ±0.4 V, High-Z) or OUT2 → IN2.
-  Expected: a vertical gradient. The fit of pixel vs OUT1 voltage gives the IN1 polarity, scale and
-  ADC linearity. Needs Martin's go and an applied overlay; reboot afterwards.
+  - FPGA analysis and docs; server2 complete, all tests pass on the PC and on the board;
+  - `fpga-dma-buffer-fix` bitstream built on Windows (timing met: WNS +0.352 ns, WHS +0.067 ns), **deployed**,
+    map1 = `0x0a000000` checked;
+  - **electrical loopback test passed** (OUT1 → IN1, generator → IN2): no kernel hang, IN1 linear (numbers above);
+  - interrupt fix in `hw_uio.c`: 70 s and 180-frame soaks at 2.5 Mrec/s without data loss (~530 IRQ/s, CPU ~1.4 of 2);
+  - fast auto-calibration and external fast drive, checked on hardware (generator 200 Hz: measured 199.99959 Hz);
+  - viewer: interpolation, true aspect, square-image frequency hint, auto-cal log.
+- Next:
+  - connect the galvos (ask Martin; check `hw.*` gains first: with the working assumption above, `hw.sensor_gain`
+    converts IN2 volts to galvo-side volts and must match the encoder scale);
+  - first real image; tune `cal.delay` (forward/backward difference);
+  - merge `fpga-dma-buffer-fix` into `main` when Martin agrees.
 - Open decisions:
-  - ~~the DMA buffer fix~~ decided 2026-10-29: `0x0A00_0000` (inside the reserved `labuf`), branch `fpga-dma-buffer-fix`;
-  - the **fast-axis resolution**: the 14-bit sensor gives only ~94 levels at the default scan.
-    Options: sine fit to the sensor (recommended), more IN2 gain, or the commanded position;
+  - the **fast-axis resolution**: the 14-bit sensor gives only ~94 levels at the default scan with gain 20.
+    The start-up fit only calibrates scale/offset; a sine-fit *position* (recommended), more IN2 gain, or the
+    commanded position are still open;
   - the meaning of the gains 10.75 / 20; the cabling.
 - FPGA issues known but not fixed (need a Vivado rebuild):
-  - ~~timing not met (WNS −4.45 ns)~~ fixed and met in the `fpga-dma-buffer-fix` build (not deployed yet);
   - WLAST depends on WREADY;
   - `DEC_FACTOR = 0` makes acquisition impossible to stop;
   - 16/17-bit address alias;
-  - interrupt-threshold underflow.
+  - interrupt-threshold underflow (worked around in software, see Hardware rules).
